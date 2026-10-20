@@ -1,0 +1,16 @@
+node_modules
+dist
+.output
+.nitro
+.tanstack
+.turbo
+.DS_Store
+.env
+.env.*
+!.env.example
+*.log
+.vite
+coverage
+*.sqlite
+*.sqlite-*
+data/
