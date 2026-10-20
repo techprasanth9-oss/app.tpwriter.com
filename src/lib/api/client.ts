@@ -1,10 +1,20 @@
 /**
  * Minimal typed fetch wrapper used by the auth and document API clients.
- * Always sends `credentials: "include"` so the session cookie flows. Routes
- * go through the Vite proxy at `/api` → `http://localhost:3001` (new BE).
+ * Always sends `credentials: "include"` so the session cookie flows.
+ *
+ * Base URL resolution:
+ *   1. `VITE_API_URL` env var — set this in .env.dev / .env.prod when the
+ *      FE is deployed to a different origin than the BE.
+ *   2. Fallback `/api` — in local dev, Vite's proxy (see vite.config.ts)
+ *      rewrites `/api/*` → `http://localhost:3001/*`, so a bare path works.
+ *
+ * Vite inlines `import.meta.env` at build time, so the base is frozen per
+ * build — set the env var before `pnpm build` / `pnpm dev`.
  */
 
-const BASE = "/api";
+const BASE =
+  (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/+$/, "") ||
+  "/api";
 
 export class ApiError extends Error {
   constructor(
