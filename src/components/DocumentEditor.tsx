@@ -12,11 +12,14 @@ import {
   useAppendPage,
   useDeletePage,
   useDocument,
+  useUpdateDocument,
+  useUpsertPage,
 } from "~/hooks/useDocuments";
 import { useAutosave } from "~/hooks/useAutosave";
 import { DocumentHeader } from "./DocumentHeader";
 import { EditorRibbon } from "./EditorRibbon";
 import { EditorJSComponent } from "./EditorJSComponent";
+import { LayoutDialog } from "./LayoutDialog";
 import { PageCanvas, DEFAULT_LAYOUT } from "./PageCanvas";
 import { ThumbnailsSidebar } from "./ThumbnailsSidebar";
 
@@ -45,6 +48,21 @@ function sanitizeFilename(name: string): string {
   return trimmed.replace(/[\/\\:*?"<>|]+/g, "_");
 }
 
+/** Return only the keys of `next` that differ from `base`. Returns null when
+ *  nothing differs — the caller stores null to mean "inherit the default". */
+function diffAgainst(
+  base: PageLayout,
+  next: PageLayout,
+): PageLayoutOverride | null {
+  const out: PageLayoutOverride = {};
+  for (const key of Object.keys(next) as Array<keyof PageLayout>) {
+    if (next[key] !== base[key]) {
+      (out as Record<string, unknown>)[key] = next[key];
+    }
+  }
+  return Object.keys(out).length === 0 ? null : out;
+}
+
 interface PageSlot {
   /** Mongo _id from the backend. */
   id: string;
@@ -66,6 +84,8 @@ export function DocumentEditor({ documentId }: Props) {
   const docQuery = useDocument(documentId);
   const appendPageMut = useAppendPage();
   const deletePageMut = useDeletePage();
+  const updateDocMut = useUpdateDocument();
+  const upsertPageMut = useUpsertPage();
 
   const [title, setTitle] = useState("Untitled document");
   const [zoom, setZoom] = useState(1);
@@ -75,6 +95,7 @@ export function DocumentEditor({ documentId }: Props) {
   const [previewVersion, setPreviewVersion] = useState(0);
   const [busy, setBusy] = useState(false);
   const [hasHydrated, setHasHydrated] = useState(false);
+  const [layoutDialogOpen, setLayoutDialogOpen] = useState(false);
 
   const editorHandlesRef = useRef<Map<string, EditorHandle>>(new Map());
   const activeEditorRef = useRef<EditorJS | null>(null);
@@ -330,6 +351,50 @@ export function DocumentEditor({ documentId }: Props) {
     }
   }, [pages, title]);
 
+  const handleLayoutApply = useCallback(
+    async (scope: "default" | "page", nextLayout: PageLayout) => {
+      if (scope === "default") {
+        // Document-wide default — every page inherits unless overridden.
+        const updated = await updateDocMut.mutateAsync({
+          id: documentId,
+          patch: { defaultLayout: nextLayout },
+        });
+        hydrateFromDoc(updated);
+        return;
+      }
+      // Per-page override: store only the keys that differ from the default
+      // so the inherited "pure" relationship stays clean. If the override
+      // matches the default exactly, we clear it to null.
+      const active = pages[activePageIndex];
+      if (!active) return;
+      const editor = editorHandlesRef.current.get(active.id)?.current;
+      const content =
+        editor && (await editor.save().catch(() => ({ blocks: [] })));
+      const diff = diffAgainst(defaultLayout, nextLayout);
+      await upsertPageMut.mutateAsync({
+        documentId,
+        pageId: active.id,
+        content: (content ?? { blocks: [] }) as EditorOutput,
+        layoutOverride: diff,
+      });
+      // Reflect the override locally without a full refetch to avoid
+      // thrashing every page's editor.
+      setPages((prev) =>
+        prev.map((p, i) =>
+          i === activePageIndex ? { ...p, layoutOverride: diff } : p,
+        ),
+      );
+    },
+    [
+      activePageIndex,
+      defaultLayout,
+      documentId,
+      pages,
+      updateDocMut,
+      upsertPageMut,
+    ],
+  );
+
   if (docQuery.isLoading) {
     return <div className="doc-full-loading">Loading document…</div>;
   }
@@ -356,6 +421,7 @@ export function DocumentEditor({ documentId }: Props) {
         onExportClick={handleExportClick}
         onSaveClick={() => void autosave.saveNow()}
         onBackClick={() => navigate({ to: "/" })}
+        onLayoutClick={() => setLayoutDialogOpen(true)}
         layout={defaultLayout}
         autosaveStatus={autosave.status}
         lastSavedAt={autosave.lastSavedAt}
@@ -433,6 +499,16 @@ export function DocumentEditor({ documentId }: Props) {
           </div>
         </main>
       </div>
+
+      <LayoutDialog
+        open={layoutDialogOpen}
+        onClose={() => setLayoutDialogOpen(false)}
+        defaultLayout={defaultLayout}
+        currentPageOverride={pages[activePageIndex]?.layoutOverride ?? null}
+        currentPageIndex={activePageIndex}
+        totalPages={pages.length}
+        onApply={handleLayoutApply}
+      />
     </div>
   );
 }
