@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port 3000",
+    "local": "vite --port 3000",
     "dev:dev-api": "vite --port 3000 --mode dev",
     "build": "vite build",
     "build:dev": "vite build --mode dev",
@@ -22,7 +23,7 @@
     "@tanstack/react-query": "^5.62.7",
     "@tanstack/react-router": "^1.87.3",
     "docx": "^9.12.0",
-    "mammoth": "^1.13.0",
+    "jszip": "^3.10.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
