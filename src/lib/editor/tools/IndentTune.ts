@@ -1,5 +1,5 @@
 
-import { API, BlockAPI, BlockTune } from "@editorjs/editorjs";
+import type { API, BlockAPI, BlockTune } from "@editorjs/editorjs";
 
 interface IndentTuneData {
   indentLevel: number;

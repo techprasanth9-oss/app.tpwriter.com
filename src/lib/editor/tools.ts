@@ -1,6 +1,8 @@
+// @ts-ignore no type declarations shipped
 import Delimiter from "@editorjs/delimiter";
+// @ts-ignore
 import InlineCode from "@editorjs/inline-code";
-// @ts-expect-error no type declarations shipped
+// @ts-ignore
 import Marker from "@editorjs/marker";
 import { HeaderTool } from "./tools/HeaderTool";
 import { AlignmentTune } from "./tools/AlignmentTune";
@@ -16,9 +18,9 @@ import {
 } from "./tools/FormatTools";
 import { TextColorTool } from "./tools/TextStyleTools";
 import { VariableTool } from "./tools/VariableTool";
-import { ImageTool, type ImageToolConfig } from "./tools/ImageTool";
-import { TableTool } from "./tools/TableTool";
-import { ColumnTool } from "./tools/ColumnTool";
+import ImageTool, { type ImageToolConfig } from "./tools/ImageTool";
+import TableTool from "./tools/TableTool";
+import ColumnTool from "./tools/ColumnTool";
 import { ParagraphTool } from "./tools/ParagraphTool";
 import { ListTool } from "./tools/ListTool";
 

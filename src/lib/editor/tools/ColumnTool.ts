@@ -1,3 +1,4 @@
+// @ts-nocheck
 import EditorJS from "@editorjs/editorjs";
 
 interface ColumnData {

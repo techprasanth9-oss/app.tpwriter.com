@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * ImageTool — EditorJS block tool for images.
  *

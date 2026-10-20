@@ -197,7 +197,7 @@ export function EditorJSComponent({
         placeholder: isFirstPage && !hasInitialBlocks ? PLACEHOLDER : undefined,
         autofocus: isFirstPage && !hasInitialBlocks,
         tools: {
-          ...configureBaseTools({ onImageUpload }),
+          ...configureBaseTools({ imageUploader: onImageUpload }),
           ...(additionalTools ?? {}),
           // TODO: tighten this once configureBaseTools exports a typed tool map.
         } as never,

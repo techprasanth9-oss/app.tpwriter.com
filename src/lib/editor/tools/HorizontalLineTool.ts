@@ -257,7 +257,7 @@ export class HorizontalLineTool implements BlockTool {
       button.classList.toggle("active", this._data.length === length.value);
 
       button.addEventListener("click", () => {
-        this._data.length = length.value;
+        this._data.length = length.value as "full" | "large" | "medium" | "small";
         this._applyStyles();
         this._updateActiveButton(lengthButtons, length.value);
       });
@@ -305,7 +305,7 @@ export class HorizontalLineTool implements BlockTool {
   }
 
   private _updateColorButtons(container: HTMLElement, color: string): void {
-    container.querySelectorAll(".color-button").forEach((button) => {
+    container.querySelectorAll<HTMLButtonElement>(".color-button").forEach((button) => {
       const isActive = button.dataset.color === color;
       button.classList.toggle("active", isActive);
 

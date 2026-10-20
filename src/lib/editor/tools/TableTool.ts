@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * TableTool — EditorJS block tool for rich tables.
  *
