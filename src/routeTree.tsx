@@ -26,8 +26,13 @@ async function fetchMeSafely(ctx: RouterContext) {
       try {
         return await authApi.fetchMe();
       } catch (err) {
-        if (err instanceof ApiError && err.status === 401) return null;
-        throw err;
+        // 401 = unauthed, expected. Any other error (500, network down,
+        // bad JSON) → treat as unauthed too so the user lands on /login
+        // instead of white-screening on a broken backend. The LoginPage
+        // itself will surface its own 500s during the actual login call.
+        if (err instanceof ApiError) return null;
+        console.error("[fetchMeSafely] unexpected error:", err);
+        return null;
       }
     },
     staleTime: 60_000,

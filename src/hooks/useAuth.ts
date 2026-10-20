@@ -13,8 +13,12 @@ export function useAuth() {
       try {
         return await authApi.fetchMe(signal);
       } catch (err) {
-        if (err instanceof ApiError && err.status === 401) return null;
-        throw err;
+        // Any ApiError (401, 500, etc.) → treat as unauthed so the UI
+        // can land on the login screen. The actual login attempt will
+        // surface a real error if the backend is still broken.
+        if (err instanceof ApiError) return null;
+        console.error("[useAuth] unexpected error:", err);
+        return null;
       }
     },
     staleTime: 60_000,
