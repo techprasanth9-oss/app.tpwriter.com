@@ -1,6 +1,6 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { useAuth } from "~/hooks/useAuth";
+import { UserMenu } from "~/components/UserMenu";
 import {
   useCreateDocument,
   useDeleteDocument,
@@ -9,7 +9,6 @@ import {
 
 export function DocumentListPage() {
   const navigate = useNavigate();
-  const { user, logout } = useAuth();
   const { data: docs, isLoading, error } = useDocumentList();
   const createMut = useCreateDocument();
   const deleteMut = useDeleteDocument();
@@ -34,12 +33,11 @@ export function DocumentListPage() {
   return (
     <div className="docs-root">
       <header className="docs-header">
-        <h1 className="doc-brand">TP Writer</h1>
+        <div className="docs-header-left">
+          <h1 className="doc-brand">TP Writer</h1>
+        </div>
         <div className="docs-header-right">
-          <span className="docs-user">{user?.displayName || user?.email}</span>
-          <button type="button" className="doc-btn" onClick={() => logout()}>
-            Sign out
-          </button>
+          <UserMenu />
         </div>
       </header>
 

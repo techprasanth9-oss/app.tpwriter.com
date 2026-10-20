@@ -10,6 +10,7 @@ import * as authApi from "./lib/api/auth";
 import { DocumentEditor } from "./components/DocumentEditor";
 import { DocumentListPage } from "./pages/DocumentListPage";
 import { LoginPage } from "./pages/LoginPage";
+import { ProfilePage } from "./pages/ProfilePage";
 
 export interface RouterContext {
   queryClient: QueryClient;
@@ -73,6 +74,16 @@ const documentDetailRoute = createRoute({
   component: DocumentDetailPage,
 });
 
+const profileRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/profile",
+  beforeLoad: async ({ context }) => {
+    const user = await fetchMeSafely(context);
+    if (!user) throw redirect({ to: "/login" });
+  },
+  component: ProfilePage,
+});
+
 function DocumentDetailPage() {
   const { documentId } = documentDetailRoute.useParams();
   return <DocumentEditor documentId={documentId} />;
@@ -82,4 +93,5 @@ export const routeTree = rootRoute.addChildren([
   loginRoute,
   documentListRoute,
   documentDetailRoute,
+  profileRoute,
 ]);
