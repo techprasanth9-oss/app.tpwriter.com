@@ -105,8 +105,7 @@ export function DocumentListPage() {
                     </div>
                     <div className="doc-card-title">{doc.title}</div>
                     <div className="doc-card-meta">
-                      {doc.pageCount} {doc.pageCount === 1 ? "page" : "pages"} ·
-                      {" "}Updated {formatRelative(doc.updatedAt)}
+                      Updated {formatRelative(doc.updatedAt)}
                     </div>
                   </button>
                   <button

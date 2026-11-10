@@ -6,34 +6,22 @@ import type {
 } from "@editorjs/editorjs";
 import { BLOCK_INLINE_TAGS } from "../sanitizers";
 
-type Alignment = "left" | "center" | "right" | "justify";
-
 interface ParagraphToolConfig {
+  /** Keep empty paragraphs on save — blank lines are layout in a word
+   *  processor, not noise. */
   preserveBlank?: boolean;
-  defaultAlignment?: Alignment;
 }
 
 interface ParagraphToolData {
   text: string;
-  alignment?: Alignment;
-  indentLevel?: number;
-  // EditorJS passes the serialized tunes payload back on load. The alignment
-  // and indent tunes write under `tunes.alignment` / `tunes.indentTune`, and
-  // the ribbon re-reads them from there — treating them as optional nested
-  // objects keeps the ctor from blowing up on blocks that have never been
-  // tuned.
-  tunes?: {
-    alignment?: { alignment?: Alignment };
-    indentTune?: { indentLevel?: number };
-  };
 }
 
 /**
  * Replacement for @editorjs/paragraph that keeps the inline-tag sanitize
  * whitelist in sync with the rest of the ported tools (so a `<mark>` chip or
- * styled `<span>` survives save+reload inside a paragraph), and ships its own
- * alignment + indent settings panel so the ribbon can hand control off to
- * paragraph tunes without a second tool class.
+ * styled `<span>` survives save+reload inside a paragraph). Alignment,
+ * indent and spacing are not the tool's concern: they live in the shared
+ * `format` tune (ParagraphFormatTune).
  *
  * Kept standalone — does NOT extend @editorjs/paragraph — because that package
  * has shipped two incompatible saved-data shapes across versions and extending
@@ -43,7 +31,6 @@ interface ParagraphToolData {
 export class ParagraphTool implements BlockTool {
   private _data: ParagraphToolData;
   private _element: HTMLDivElement;
-  private _settings: HTMLElement | null;
   private api: API;
   private readOnly: boolean;
   private config: ParagraphToolConfig;
@@ -83,29 +70,13 @@ export class ParagraphTool implements BlockTool {
     this.api = api;
     this.readOnly = readOnly;
     const typedConfig: ParagraphToolConfig = (config as ParagraphToolConfig) ?? {};
-    this.config = {
-      preserveBlank: false,
-      defaultAlignment: "left",
-      ...typedConfig,
-    };
+    this.config = { preserveBlank: false, ...typedConfig };
 
     const typedData = (data ?? {}) as ParagraphToolData;
-    this._data = {
-      text: typedData.text || "",
-      // save() writes top-level `alignment` / `indentLevel`; read those first
-      // so settings-panel changes survive a reload. The nested `tunes` shape
-      // is kept as a fallback for older imported data.
-      alignment:
-        typedData.alignment ||
-        typedData.tunes?.alignment?.alignment ||
-        this.config.defaultAlignment,
-      indentLevel:
-        typedData.indentLevel ?? typedData.tunes?.indentTune?.indentLevel ?? 0,
-    };
+    this._data = { text: typedData.text || "" };
 
     this._element = this._createParagraphElement();
-    this._preserveBlank = typedConfig.preserveBlank ?? false;
-    this._settings = null;
+    this._preserveBlank = this.config.preserveBlank ?? false;
   }
 
   private _createParagraphElement(): HTMLDivElement {
@@ -114,138 +85,15 @@ export class ParagraphTool implements BlockTool {
     return element;
   }
 
-  renderSettings(): HTMLElement {
-    const wrapper = document.createElement("div");
-    wrapper.classList.add("ce-paragraph-settings");
-
-    const alignments: Alignment[] = ["left", "center", "right", "justify"];
-    const alignmentIcons: Record<Alignment, string> = {
-      left: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 4H14V5.5H2V4ZM2 7H10V8.5H2V7ZM2 10H14V11.5H2V10ZM2 13H10V14.5H2V13Z" fill="currentColor"/></svg>',
-      center:
-        '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 4H13V5.5H3V4ZM5 7H11V8.5H5V7ZM3 10H13V11.5H3V10ZM5 13H11V14.5H5V13Z" fill="currentColor"/></svg>',
-      right:
-        '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 4H14V5.5H2V4ZM6 7H14V8.5H6V7ZM2 10H14V11.5H2V10ZM6 13H14V14.5H6V13Z" fill="currentColor"/></svg>',
-      justify:
-        '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 4H14V5.5H2V4ZM2 7H14V8.5H2V7ZM2 10H14V11.5H2V10ZM2 13H14V14.5H2V13Z" fill="currentColor"/></svg>',
-    };
-    const alignmentLabels: Record<Alignment, string> = {
-      left: "Align left",
-      center: "Align center",
-      right: "Align right",
-      justify: "Justify",
-    };
-
-    alignments.forEach((alignment) => {
-      const button = document.createElement("button");
-      button.classList.add("ce-paragraph-settings__button");
-      button.type = "button";
-      button.innerHTML = alignmentIcons[alignment];
-      button.title = alignmentLabels[alignment];
-      button.classList.toggle("active", this._data.alignment === alignment);
-
-      button.addEventListener("click", () => {
-        this.setAlignment(alignment);
-      });
-
-      wrapper.appendChild(button);
-    });
-
-    const indentControls = document.createElement("div");
-    indentControls.classList.add("ce-paragraph-settings__indent-controls");
-
-    const decreaseIndentButton = document.createElement("button");
-    decreaseIndentButton.classList.add("ce-paragraph-settings__button");
-    decreaseIndentButton.type = "button";
-    decreaseIndentButton.innerHTML =
-      '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 4H14V5.5H2V4ZM6 7H14V8.5H6V7ZM6 10H14V11.5H6V10ZM2 7.75L5 9.5L2 11.25V7.75ZM6 13H14V14.5H6V13Z" fill="currentColor"/></svg>';
-    decreaseIndentButton.title = "Decrease indent";
-    decreaseIndentButton.disabled = (this._data.indentLevel || 0) <= 0;
-
-    decreaseIndentButton.addEventListener("click", () => {
-      this.setIndentLevel(Math.max((this._data.indentLevel || 0) - 1, 0));
-    });
-
-    const increaseIndentButton = document.createElement("button");
-    increaseIndentButton.classList.add("ce-paragraph-settings__button");
-    increaseIndentButton.type = "button";
-    increaseIndentButton.innerHTML =
-      '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 4H14V5.5H2V4ZM2 7H10V8.5H2V7ZM2 10H10V11.5H2V10ZM11 7.75L14 9.5L11 11.25V7.75ZM2 13H10V14.5H2V13Z" fill="currentColor"/></svg>';
-    increaseIndentButton.title = "Increase indent";
-    increaseIndentButton.disabled = (this._data.indentLevel || 0) >= 5;
-
-    increaseIndentButton.addEventListener("click", () => {
-      this.setIndentLevel(Math.min((this._data.indentLevel || 0) + 1, 5));
-    });
-
-    indentControls.appendChild(decreaseIndentButton);
-    indentControls.appendChild(increaseIndentButton);
-    wrapper.appendChild(indentControls);
-
-    this._settings = wrapper;
-    return wrapper;
-  }
-
-  setAlignment(alignment: Alignment): void {
-    this._data.alignment = alignment;
-    this._applyParagraphStyle();
-
-    if (this._settings) {
-      this._settings
-        .querySelectorAll(".ce-paragraph-settings__button")
-        .forEach((button) => {
-          button.classList.remove("active");
-          if ((button as HTMLButtonElement).title === `Align ${alignment}`) {
-            button.classList.add("active");
-          }
-        });
-    }
-  }
-
-  setIndentLevel(level: number): void {
-    this._data.indentLevel = level;
-    this._applyParagraphStyle();
-
-    if (this._settings) {
-      const decreaseButton = this._settings.querySelector(
-        ".ce-paragraph-settings__indent-controls button:first-child",
-      ) as HTMLButtonElement | null;
-      const increaseButton = this._settings.querySelector(
-        ".ce-paragraph-settings__indent-controls button:last-child",
-      ) as HTMLButtonElement | null;
-
-      if (decreaseButton) {
-        decreaseButton.disabled = level <= 0;
-      }
-
-      if (increaseButton) {
-        increaseButton.disabled = level >= 5;
-      }
-    }
-  }
-
-  private _applyParagraphStyle(): void {
-    if (this._element) {
-      this._element.style.textAlign = this._data.alignment || "left";
-      this._element.style.paddingLeft = `${(this._data.indentLevel || 0) * 20}px`;
-    }
-  }
-
   render(): HTMLElement {
     this._element.innerHTML = this._data.text || "";
     this._element.contentEditable = (!this.readOnly).toString();
-    this._applyParagraphStyle();
     return this._element;
   }
 
   save(): ParagraphToolData | null {
     const text = this._element.innerHTML.trim();
-    return this._preserveBlank || text
-      ? {
-          text,
-          alignment: this._data.alignment,
-          indentLevel: this._data.indentLevel,
-        }
-      : null;
+    return this._preserveBlank || text ? { text } : null;
   }
 
   static get conversionConfig() {

@@ -361,45 +361,9 @@ body {
   width: fit-content;
 }
 
-.doc-page-slot {
-  position: relative;
-}
 
-.doc-page {
-  position: relative;
-}
 
-.doc-page-badge {
-  position: absolute;
-  top: -26px;
-  right: 0;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--tp-mute);
-  font-weight: 500;
-  pointer-events: none;
-  user-select: none;
-}
 
-.add-page-inline {
-  display: block;
-  margin: 20px auto 40px;
-  padding: 14px 28px;
-  background: var(--tp-paper);
-  border: 1px dashed var(--tp-rule-strong);
-  border-radius: 4px;
-  color: var(--tp-slate);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: border-color 120ms, background 120ms, color 120ms;
-}
-.add-page-inline:hover {
-  border-color: var(--tp-accent);
-  background: #fff5e9;
-  color: var(--tp-accent);
-}
 
 /* ──────────────────────────────────────────────────────────────────
    Thumbnails sidebar
@@ -518,25 +482,6 @@ body {
   font-weight: 600;
 }
 
-.thumb-delete {
-  width: 18px;
-  height: 18px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--tp-mute);
-  border-radius: 3px;
-  font-size: 15px;
-  line-height: 1;
-  cursor: pointer;
-  background: transparent;
-  border: 1px solid transparent;
-}
-.thumb-delete:hover {
-  background: #fee2e2;
-  color: #991b1b;
-  border-color: #fecaca;
-}
 
 .thumbs-add-btn {
   margin: 10px 14px 16px;
@@ -601,17 +546,10 @@ body {
 
 .page-canvas .ce-header {
   margin: 0;
-  padding: 6px 0 4px;
-  font-family: var(--tp-font-serif);
-  font-weight: 600;
-  line-height: 1.2;
+  padding: 0;
   color: var(--tp-ink);
   letter-spacing: -0.015em;
 }
-.page-canvas .ce-header[data-level="1"] { font-size: 34px; margin-top: 6px; }
-.page-canvas .ce-header[data-level="2"] { font-size: 26px; margin-top: 4px; }
-.page-canvas .ce-header[data-level="3"] { font-size: 20px; }
-.page-canvas .ce-header[data-level="4"] { font-size: 17px; font-weight: 700; }
 
 .page-canvas .cdx-list {
   padding-left: 1.5em;
@@ -1763,4 +1701,113 @@ body {
     grid-template-columns: 1fr;
     gap: 4px;
   }
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   Paginated document: one editor flowing over page sheets
+   ────────────────────────────────────────────────────────────────── */
+
+.tp-zoom-box {
+  position: relative;
+  margin: 0 auto;
+}
+
+.tp-document {
+  position: relative;
+  transform-origin: top left;
+}
+
+/* Paper sheets drawn behind the text. */
+.tp-sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background: var(--tp-paper);
+  border: 1px solid var(--tp-rule);
+  border-radius: 2px;
+  box-shadow: var(--tp-shadow-md);
+  pointer-events: none;
+}
+
+.tp-sheet-number {
+  position: absolute;
+  bottom: -22px;
+  right: 0;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--tp-mute);
+  user-select: none;
+}
+
+/* The text layer sits on top of the sheets and is transparent. */
+.page-canvas.tp-flow {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  border-radius: 0;
+  box-sizing: border-box;
+}
+
+/* Contain child margins so a block's offsetHeight is its full stride —
+   the paginator relies on it. Its margin-top belongs to the paginator. */
+.tp-flow .ce-block {
+  display: flow-root;
+}
+
+/* Direct paragraph spacing replaces the named style's margin. */
+.tp-format.tp-has-space-before > * { margin-top: 0 !important; }
+.tp-format.tp-has-space-after > * { margin-bottom: 0 !important; }
+
+.tp-page-break {
+  position: relative;
+  height: 18px;
+  margin: 6px 0;
+  border-top: 1px dashed var(--tp-rule-strong);
+  user-select: none;
+}
+.tp-page-break__label {
+  position: absolute;
+  top: -9px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0 8px;
+  background: var(--tp-paper);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--tp-mute);
+}
+
+@media print {
+  .tp-page-break { visibility: hidden; }
+}
+
+.ribbon-btn-active {
+  background: var(--tp-accent-faint);
+  color: var(--tp-accent);
+  border-color: var(--tp-accent-soft);
+}
+.ribbon-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ribbon-select-narrow {
+  width: auto;
+  min-width: 0;
+}
+
+.doc-conflict {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  background: #fff7ed;
+  border-bottom: 1px solid var(--tp-accent-soft);
+  color: var(--tp-ink);
+  font-size: 13px;
+}
+.doc-conflict span {
+  flex: 1 1 auto;
 }

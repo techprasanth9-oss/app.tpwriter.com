@@ -1,12 +1,12 @@
 // @ts-ignore no type declarations shipped
-import Delimiter from "@editorjs/delimiter";
-// @ts-ignore
 import InlineCode from "@editorjs/inline-code";
 // @ts-ignore
 import Marker from "@editorjs/marker";
 import { HeaderTool } from "./tools/HeaderTool";
 import { AlignmentTune } from "./tools/AlignmentTune";
-import { IndentTune } from "./tools/IndentTune";
+import { ParagraphFormatTune } from "./tools/ParagraphFormatTune";
+import { PageBreakTool } from "./tools/PageBreakTool";
+import { FORMAT_TUNE } from "./format/paragraphFormat";
 import { HorizontalLineTool } from "./tools/HorizontalLineTool";
 import {
   BoldTool,
@@ -44,35 +44,40 @@ export function configureBaseTools(
     "inlineCode",
     "variable",
   ];
-  const sharedTunes = ["alignment", "indent"];
+  // Text blocks share one paragraph-format tune (alignment, indent,
+  // spacing, named style). Tables / images / lines keep the old alignment
+  // tune — it positions the object, which is a different job.
+  const textTunes = [FORMAT_TUNE];
+  const objectTunes = ["alignment"];
 
   return {
     header: {
       class: HeaderTool as unknown as object,
       inlineToolbar,
-      config: { levels: [1, 2, 3, 4], defaultLevel: 2 },
-      tunes: sharedTunes,
+      config: { levels: [1, 2, 3, 4], defaultLevel: 2, preserveBlank: true },
+      tunes: textTunes,
     },
     paragraph: {
       class: ParagraphTool as unknown as object,
       inlineToolbar,
-      tunes: sharedTunes,
+      config: { preserveBlank: true },
+      tunes: textTunes,
     },
     list: {
       class: ListTool as unknown as object,
       inlineToolbar,
       config: { defaultStyle: "unordered" },
-      tunes: sharedTunes,
+      tunes: textTunes,
     },
     table: {
       class: TableTool as unknown as object,
       inlineToolbar,
-      tunes: ["alignment"],
+      tunes: objectTunes,
     },
     image: {
       class: ImageTool as unknown as object,
       config: { uploader: opts.imageUploader } satisfies ImageToolConfig,
-      tunes: ["alignment"],
+      tunes: objectTunes,
     },
     column: {
       class: ColumnTool as unknown as object,
@@ -80,9 +85,9 @@ export function configureBaseTools(
     },
     horizontalLine: {
       class: HorizontalLineTool as unknown as object,
-      tunes: ["alignment"],
+      tunes: objectTunes,
     },
-    delimiter: { class: Delimiter as unknown as object },
+    pageBreak: { class: PageBreakTool as unknown as object },
     inlineCode: { class: InlineCode as unknown as object },
     marker: { class: Marker as unknown as object },
     bold: { class: BoldTool as unknown as object },
@@ -97,6 +102,6 @@ export function configureBaseTools(
       config: { availableVariables: opts.variables ?? [] },
     },
     alignment: { class: AlignmentTune as unknown as object },
-    indent: { class: IndentTune as unknown as object },
+    [FORMAT_TUNE]: { class: ParagraphFormatTune as unknown as object },
   };
 }

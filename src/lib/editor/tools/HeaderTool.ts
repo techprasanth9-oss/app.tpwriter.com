@@ -6,8 +6,6 @@ import type {
 } from "@editorjs/editorjs";
 import { BLOCK_INLINE_TAGS } from "../sanitizers";
 
-type Alignment = "left" | "center" | "right";
-
 interface HeaderToolConfig {
   levels: number[];
   defaultLevel: number;
@@ -17,8 +15,6 @@ interface HeaderToolConfig {
 interface HeaderToolData {
   text: string;
   level: number;
-  alignment?: Alignment;
-  indentLevel?: number;
 }
 
 export class HeaderTool implements BlockTool {
@@ -82,8 +78,6 @@ export class HeaderTool implements BlockTool {
     this._data = {
       text: data?.text || "",
       level: this._normalizeLevel(data?.level),
-      alignment: data?.tunes?.alignment?.alignment || "left",
-      indentLevel: data?.tunes?.indentTune?.indentLevel || 0,
     };
 
     this._element = this._createHeaderElement();
@@ -127,7 +121,6 @@ export class HeaderTool implements BlockTool {
     this._data.level = this._normalizeLevel(level);
     this._element.className = `ce-header ce-header-level-${this._data.level}`;
     this._element.dataset.level = this._data.level.toString();
-    this._applyHeaderStyle();
 
     if (this._settings) {
       this._settings
@@ -141,26 +134,12 @@ export class HeaderTool implements BlockTool {
     }
   }
 
-  private _applyHeaderStyle(): void {
-    const sizes: Record<number, { fontSize: string; fontWeight: string }> = {
-      1: { fontSize: "2em", fontWeight: "bold" },
-      2: { fontSize: "1.5em", fontWeight: "bold" },
-      3: { fontSize: "1.17em", fontWeight: "bold" },
-      4: { fontSize: "1em", fontWeight: "bold" },
-      5: { fontSize: "0.83em", fontWeight: "bold" },
-      6: { fontSize: "0.67em", fontWeight: "bold" },
-    };
-    const style = sizes[this._data.level];
-    if (style) Object.assign(this._element.style, style);
-  }
-
   render(): HTMLElement {
     this._element.innerHTML = this._data.text || "";
     this._element.contentEditable = (!this.readOnly).toString();
+    // Size / font come from the document's named styles (heading1…4), so
+    // there are no inline styles here.
     this._element.dataset.level = this._data.level.toString();
-    this._applyHeaderStyle();
-    this._element.style.textAlign = this._data.alignment ?? "left";
-    this._element.style.paddingLeft = `${(this._data.indentLevel ?? 0) * 20}px`;
     return this._element;
   }
 

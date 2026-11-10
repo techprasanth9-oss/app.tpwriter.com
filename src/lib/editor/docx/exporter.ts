@@ -7,6 +7,7 @@ import {
   Document,
   HeadingLevel,
   ImageRun,
+  PageBreak,
   Packer,
   Paragraph,
   Table,
@@ -18,6 +19,29 @@ import {
   type ParagraphChild,
 } from "docx";
 import type { EditorBlock, EditorOutput } from "./importer";
+import { normalizeBlock } from "../normalize";
+import { cleanFormat, FORMAT_TUNE, INDENT_STEP_PX } from "../format/paragraphFormat";
+
+/** CSS px (96 dpi) → twips (1/1440 in). */
+const pxToTwip = (px: number) => Math.round(px * 15);
+
+/** Paragraph options from the block's `format` tune. */
+function formatOptions(block: EditorBlock) {
+  const tunes = (block as unknown as { tunes?: Record<string, unknown> }).tunes;
+  const f = cleanFormat(tunes?.[FORMAT_TUNE]);
+  return {
+    alignment: tuneAlignment(f.alignment),
+    ...(f.indent ? { indent: { left: pxToTwip(f.indent * INDENT_STEP_PX) } } : {}),
+    ...(f.spaceBefore !== undefined || f.spaceAfter !== undefined
+      ? {
+          spacing: {
+            ...(f.spaceBefore !== undefined ? { before: pxToTwip(f.spaceBefore) } : {}),
+            ...(f.spaceAfter !== undefined ? { after: pxToTwip(f.spaceAfter) } : {}),
+          },
+        }
+      : {}),
+  };
+}
 
 const HEADING_LEVELS: Record<number, (typeof HeadingLevel)[keyof typeof HeadingLevel]> = {
   1: HeadingLevel.HEADING_1,
@@ -83,13 +107,15 @@ export async function exportDocx(
 }
 
 function blockToDocx(
-  block: EditorBlock,
+  rawBlock: EditorBlock,
 ): Paragraph | Table | Array<Paragraph | Table> | null {
+  // Fold legacy alignment/indent shapes into the format tune first.
+  const block = normalizeBlock(rawBlock);
   switch (block.type) {
     case "paragraph": {
       return new Paragraph({
         children: inlineHtmlToRuns(String(block.data.text ?? "")),
-        alignment: tuneAlignment(block),
+        ...formatOptions(block),
       });
     }
     case "header": {
@@ -97,8 +123,11 @@ function blockToDocx(
       return new Paragraph({
         heading: HEADING_LEVELS[level] ?? HeadingLevel.HEADING_2,
         children: inlineHtmlToRuns(String(block.data.text ?? "")),
-        alignment: tuneAlignment(block),
+        ...formatOptions(block),
       });
+    }
+    case "pageBreak": {
+      return new Paragraph({ children: [new PageBreak()] });
     }
     case "list": {
       const style = String(block.data.style ?? "unordered");
@@ -151,12 +180,8 @@ function blockToDocx(
 }
 
 function tuneAlignment(
-  block: EditorBlock,
+  a: string | undefined,
 ): (typeof AlignmentType)[keyof typeof AlignmentType] | undefined {
-  const tunes = (block as unknown as {
-    tunes?: { alignment?: { alignment?: string } };
-  }).tunes;
-  const a = tunes?.alignment?.alignment;
   switch (a) {
     case "left":
       return AlignmentType.LEFT;

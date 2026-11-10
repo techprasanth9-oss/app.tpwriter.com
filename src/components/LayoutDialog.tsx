@@ -1,24 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
-import type {
-  Orientation,
-  PageLayout,
-  PageLayoutOverride,
-  PaperSize,
-} from "~/lib/api/documents";
+import { useEffect, useState } from "react";
+import type { Orientation, PageLayout, PaperSize } from "~/lib/api/documents";
 
 /**
- * Page layout picker — paper size, orientation, margins.
- *
- * Operates in two modes:
- *   - "default" scope: edits document.defaultLayout → affects every page
- *     unless the page has its own override.
- *   - "page" scope: writes layoutOverride on the current page only; the
- *     rest of the document is untouched.
- *
- * The dialog starts from the effective layout (defaultLayout merged with
- * the current page's override). On apply, we send either a full PageLayout
- * (default scope) or a PageLayoutOverride diff (page scope — only the keys
- * that differ from the default).
+ * Page layout picker — paper size, orientation, margins. Applies to the
+ * whole document; per-section layouts arrive with section breaks.
  */
 
 const PAPER_SIZES: PaperSize[] = ["A4", "LETTER", "LEGAL", "A3", "A5"];
@@ -37,45 +22,21 @@ const PRESET_MARGINS = [
   { label: "Wide (1.5 in)", value: 144 },
 ] as const;
 
-type Scope = "default" | "page";
-
 interface Props {
   open: boolean;
   onClose: () => void;
-  /** Document-level default. */
+  /** Document-level layout. */
   defaultLayout: PageLayout;
-  /** Current page's override (or null if the page inherits the default). */
-  currentPageOverride: PageLayoutOverride | null;
-  currentPageIndex: number;
-  totalPages: number;
-  /** Called when the user applies the layout. The implementation decides
-   *  whether this writes defaultLayout (scope="default") or the override
-   *  for one page (scope="page"). */
-  onApply: (scope: Scope, layout: PageLayout) => Promise<void> | void;
+  onApply: (layout: PageLayout) => Promise<void> | void;
 }
 
 export function LayoutDialog({
   open,
   onClose,
   defaultLayout,
-  currentPageOverride,
-  currentPageIndex,
-  totalPages,
   onApply,
 }: Props) {
-  // Effective layout the current page is seeing right now = default merged
-  // with its override. This is what the dialog initialises from so the user
-  // sees "what I have today" before changing anything.
-  const effectiveLayout: PageLayout = useMemo(
-    () =>
-      currentPageOverride
-        ? { ...defaultLayout, ...currentPageOverride }
-        : defaultLayout,
-    [defaultLayout, currentPageOverride],
-  );
-
-  const [scope, setScope] = useState<Scope>("default");
-  const [draft, setDraft] = useState<PageLayout>(effectiveLayout);
+  const [draft, setDraft] = useState<PageLayout>(defaultLayout);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -83,11 +44,10 @@ export function LayoutDialog({
   // show stale edits from a prior cancel.
   useEffect(() => {
     if (open) {
-      setDraft(effectiveLayout);
-      setScope("default");
+      setDraft(defaultLayout);
       setError(null);
     }
-  }, [open, effectiveLayout]);
+  }, [open, defaultLayout]);
 
   if (!open) return null;
 
@@ -110,7 +70,7 @@ export function LayoutDialog({
     setSaving(true);
     setError(null);
     try {
-      await onApply(scope, draft);
+      await onApply(draft);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -218,34 +178,6 @@ export function LayoutDialog({
                   {p.label}
                 </button>
               ))}
-            </div>
-          </section>
-
-          <section className="layout-section">
-            <span className="layout-label">Apply to</span>
-            <div className="layout-scope">
-              <label className="layout-scope-opt">
-                <input
-                  type="radio"
-                  name="scope"
-                  value="default"
-                  checked={scope === "default"}
-                  onChange={() => setScope("default")}
-                />
-                <span>All pages (document default)</span>
-              </label>
-              <label className="layout-scope-opt">
-                <input
-                  type="radio"
-                  name="scope"
-                  value="page"
-                  checked={scope === "page"}
-                  onChange={() => setScope("page")}
-                />
-                <span>
-                  This page only (page {currentPageIndex + 1} of {totalPages})
-                </span>
-              </label>
             </div>
           </section>
 

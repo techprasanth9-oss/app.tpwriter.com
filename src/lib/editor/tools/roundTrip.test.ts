@@ -24,20 +24,21 @@ function make<T>(Tool: any, data: unknown): T {
 }
 
 describe("tool round-trips", () => {
-  it("paragraph keeps alignment and indent", () => {
-    const data = { text: "Hello <b>world</b>", alignment: "center", indentLevel: 2 };
-    const tool = make<ParagraphTool>(ParagraphTool, data);
-    tool.render();
-    expect(tool.save()).toEqual(data);
-  });
-
-  it("paragraph still reads the legacy nested tunes shape", () => {
-    const tool = make<ParagraphTool>(ParagraphTool, {
-      text: "x",
-      tunes: { alignment: { alignment: "right" }, indentTune: { indentLevel: 1 } },
+  it("paragraph saves its text only — formatting lives in the format tune", () => {
+    const tool = new (ParagraphTool as any)({
+      data: { text: "Hello <b>world</b>" },
+      api,
+      config: { preserveBlank: true },
+      readOnly: false,
     });
     tool.render();
-    expect(tool.save()).toMatchObject({ alignment: "right", indentLevel: 1 });
+    expect(tool.save()).toEqual({ text: "Hello <b>world</b>" });
+  });
+
+  it("paragraph keeps blank lines when preserveBlank is set", () => {
+    const tool = new (ParagraphTool as any)({ data: { text: "" }, api, config: { preserveBlank: true }, readOnly: false });
+    tool.render();
+    expect(tool.save()).toEqual({ text: "" });
   });
 
   it("horizontal line keeps its indent", () => {

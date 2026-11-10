@@ -1,33 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import type EditorJS from "@editorjs/editorjs";
-import type { OutputData } from "@editorjs/editorjs";
-import {
-  exportDocx,
-  importDocx,
-  MAX_DOCX_BYTES,
-  type EditorOutput,
-} from "~/lib/editor";
-import { sanitizeEditorData } from "~/lib/editor/sanitizeData";
+import { exportDocx, MAX_DOCX_BYTES, parseDocx } from "~/lib/editor";
+import type { EditorBlock, FullDocument, PageLayout } from "~/lib/api/documents";
+import { updateDocument } from "~/lib/api/documents";
 import { uploadImage as uploadImageToApi } from "~/lib/api/uploads";
-import type {
-  FullDocument,
-  PageLayout,
-  PageLayoutOverride,
-} from "~/lib/api/documents";
-import {
-  useAppendPage,
-  useDeletePage,
-  useDocument,
-  useUpdateDocument,
-  useUpsertPage,
-} from "~/hooks/useDocuments";
+import { useDocument } from "~/hooks/useDocuments";
 import { useAutosave } from "~/hooks/useAutosave";
+import { EditorCommands } from "~/lib/editor/commands";
+import type { DiffBlock } from "~/lib/editor/contentDiff";
+import { EditorHistory } from "~/lib/editor/history";
+import { normalizeBlocks } from "~/lib/editor/normalize";
+import { PAGE_GAP, pageSize } from "~/lib/editor/pagination/paper";
+import type { PageSummary } from "~/lib/editor/pagination/usePagination";
+import { sanitizeEditorData } from "~/lib/editor/sanitizeData";
+import { resolveStyles, stylesToCss } from "~/lib/editor/styles/namedStyles";
 import { DocumentHeader } from "./DocumentHeader";
+import { DocumentSurface, type DocumentSurfaceHandle, type SurfaceKeyCommand } from "./DocumentSurface";
 import { EditorRibbon } from "./EditorRibbon";
-import { EditorJSComponent } from "./EditorJSComponent";
 import { LayoutDialog } from "./LayoutDialog";
-import { PageCanvas, DEFAULT_LAYOUT } from "./PageCanvas";
 import { ThumbnailsSidebar } from "./ThumbnailsSidebar";
 
 async function uploadImage(file: File): Promise<{ url: string }> {
@@ -51,421 +42,39 @@ function sanitizeFilename(name: string): string {
   return trimmed.replace(/[\/\\:*?"<>|]+/g, "_");
 }
 
-/** Return only the keys of `next` that differ from `base`. Returns null when
- *  nothing differs — the caller stores null to mean "inherit the default". */
-function diffAgainst(
-  base: PageLayout,
-  next: PageLayout,
-): PageLayoutOverride | null {
-  const out: PageLayoutOverride = {};
-  for (const key of Object.keys(next) as Array<keyof PageLayout>) {
-    if (next[key] !== base[key]) {
-      (out as Record<string, unknown>)[key] = next[key];
-    }
-  }
-  return Object.keys(out).length === 0 ? null : out;
-}
-
-interface PageSlot {
-  /** Mongo _id from the backend. */
-  id: string;
-  initialData?: OutputData;
-  layoutOverride: PageLayoutOverride | null;
-}
-
-interface EditorHandle {
-  current: EditorJS | null;
+/** EditorJS output → the block shape autosave diffs and the API stores.
+ *  Tunes with no data (an unformatted paragraph's `format: {}`) are dropped
+ *  so they don't register as changes against the stored blocks. */
+async function readBlocks(editor: EditorJS): Promise<DiffBlock[]> {
+  const out = await editor.save();
+  return out.blocks.map((b) => {
+    const tunes = Object.fromEntries(
+      Object.entries((b.tunes ?? {}) as Record<string, unknown>).filter(
+        ([, v]) => v && typeof v === "object" && Object.keys(v).length > 0,
+      ),
+    );
+    return {
+      id: b.id!,
+      type: b.type,
+      data: b.data,
+      ...(Object.keys(tunes).length > 0 ? { tunes } : {}),
+    };
+  });
 }
 
 interface Props {
   documentId: string;
 }
 
+/** Loads the document, then hands it to the editor workspace. */
 export function DocumentEditor({ documentId }: Props) {
   const navigate = useNavigate();
-
   const docQuery = useDocument(documentId);
-  const appendPageMut = useAppendPage();
-  const deletePageMut = useDeletePage();
-  const updateDocMut = useUpdateDocument();
-  const upsertPageMut = useUpsertPage();
-
-  const [title, setTitle] = useState("Untitled document");
-  const [zoom, setZoom] = useState(1);
-  const [defaultLayout, setDefaultLayout] = useState<PageLayout>(DEFAULT_LAYOUT);
-  const [pages, setPages] = useState<PageSlot[]>([]);
-  const [activePageIndex, setActivePageIndex] = useState(0);
-  const [previewVersion, setPreviewVersion] = useState(0);
-  const [busy, setBusy] = useState(false);
-  const [hasHydrated, setHasHydrated] = useState(false);
-  const [layoutDialogOpen, setLayoutDialogOpen] = useState(false);
-
-  const editorHandlesRef = useRef<Map<string, EditorHandle>>(new Map());
-  const activeEditorRef = useRef<EditorJS | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const pageSlotRefs = useRef<Map<string, HTMLElement>>(new Map());
-  // Latest pages for callbacks that EditorJS instances hold onto.
-  const pagesRef = useRef<PageSlot[]>([]);
-  pagesRef.current = pages;
-  const appendInFlightRef = useRef(false);
-
-  // Hydrate from the loaded doc once per documentId change.
-  useEffect(() => {
-    if (!docQuery.data || hasHydrated) return;
-    hydrateFromDoc(docQuery.data);
-    setHasHydrated(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [docQuery.data, hasHydrated]);
-
-  useEffect(() => {
-    setHasHydrated(false);
-    editorHandlesRef.current.clear();
-    pageSlotRefs.current.clear();
-  }, [documentId]);
-
-  /** Initial load only: takes everything (title, layout, content) from the
-   *  server. */
-  function hydrateFromDoc(doc: FullDocument) {
-    setTitle(doc.title);
-    setDefaultLayout(doc.defaultLayout);
-    setPages(
-      doc.pages.map((p) => ({
-        id: p.id,
-        initialData: p.content as OutputData,
-        layoutOverride: p.layoutOverride,
-      })),
-    );
-    setActivePageIndex(0);
-  }
-
-  /** After a structural change (page added / deleted): take the server's
-   *  page list but keep every existing slot object as-is. Handing an open
-   *  editor the server's copy of its content would reset it to the last
-   *  autosave and drop whatever the user typed since. */
-  function syncPagesFromDoc(doc: FullDocument) {
-    setDefaultLayout(doc.defaultLayout);
-    setPages((prev) => {
-      const existing = new Map(prev.map((p) => [p.id, p]));
-      return doc.pages.map(
-        (p) =>
-          existing.get(p.id) ?? {
-            id: p.id,
-            initialData: p.content as OutputData,
-            layoutOverride: p.layoutOverride,
-          },
-      );
-    });
-    setActivePageIndex((i) => Math.min(i, Math.max(doc.pages.length - 1, 0)));
-  }
-
-  const getOrCreateHandle = useCallback((pageId: string): EditorHandle => {
-    let handle = editorHandlesRef.current.get(pageId);
-    if (!handle) {
-      handle = { current: null };
-      editorHandlesRef.current.set(pageId, handle);
-    }
-    return handle;
-  }, []);
-
-  const editorsForSidebar = useMemo(() => {
-    const out = new Map<string, EditorJS>();
-    for (const [id, handle] of editorHandlesRef.current.entries()) {
-      if (handle.current) out.set(id, handle.current);
-    }
-    return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [previewVersion, pages]);
-
-  const bumpPreviews = useCallback(() => setPreviewVersion((v) => v + 1), []);
-
-  const handleChange = useCallback(
-    (pageId: string) => (_data: OutputData) => {
-      bumpPreviews();
-      const idx = pages.findIndex((p) => p.id === pageId);
-      if (idx === activePageIndex) {
-        const handle = editorHandlesRef.current.get(pageId);
-        if (handle?.current) activeEditorRef.current = handle.current;
-      }
-    },
-    [activePageIndex, bumpPreviews, pages],
-  );
-
-  // When the current page overflows its height, add a new blank page.
-  // Only fires for the last page so middle-pages can grow freely.
-  const handleOverflow = useCallback(
-    async (overflowingPageId: string) => {
-      // Read the latest pages: this runs from inside an EditorJS onChange
-      // that may have been created several renders ago.
-      const current = pagesRef.current;
-      const idx = current.findIndex((p) => p.id === overflowingPageId);
-      if (idx !== current.length - 1) return;
-      // Every keystroke while overflowing re-fires this; only one append
-      // may be in flight or we'd add a page per keystroke.
-      if (appendInFlightRef.current) return;
-      appendInFlightRef.current = true;
-      try {
-        const next = await appendPageMut.mutateAsync(documentId);
-        syncPagesFromDoc(next);
-      } catch (err) {
-        console.error("[appendPage] failed:", err);
-      } finally {
-        appendInFlightRef.current = false;
-      }
-    },
-    [appendPageMut, documentId],
-  );
-
-  const handlePageFocus = useCallback(
-    (pageId: string, index: number) => () => {
-      setActivePageIndex(index);
-      const handle = editorHandlesRef.current.get(pageId);
-      if (handle?.current) activeEditorRef.current = handle.current;
-    },
-    [],
-  );
-
-  const addPage = useCallback(async () => {
-    try {
-      const next = await appendPageMut.mutateAsync(documentId);
-      syncPagesFromDoc(next);
-    } catch (err) {
-      console.error("[addPage] failed:", err);
-    }
-  }, [appendPageMut, documentId]);
-
-  const deletePage = useCallback(
-    async (index: number) => {
-      const page = pages[index];
-      if (!page || pages.length <= 1) return;
-      try {
-        await deletePageMut.mutateAsync({ documentId, pageId: page.id });
-        // Only drop the editor handle once the server agreed — dropping it
-        // first means a failed delete leaves a page autosave no longer sees.
-        editorHandlesRef.current.delete(page.id);
-        pageSlotRefs.current.delete(page.id);
-        const refreshed = await docQuery.refetch();
-        if (refreshed.data) syncPagesFromDoc(refreshed.data);
-      } catch (err) {
-        console.error("[deletePage] failed:", err);
-      }
-    },
-    [deletePageMut, docQuery, documentId, pages],
-  );
-
-  const scrollToPage = useCallback(
-    (index: number) => {
-      const pageId = pages[index]?.id;
-      if (!pageId) return;
-      pageSlotRefs.current.get(pageId)?.scrollIntoView({ behavior: "smooth", block: "start" });
-    },
-    [pages],
-  );
-
-  const selectPage = useCallback(
-    (index: number) => {
-      setActivePageIndex(index);
-      scrollToPage(index);
-      const pageId = pages[index]?.id;
-      if (!pageId) return;
-      const handle = editorHandlesRef.current.get(pageId);
-      if (handle?.current) activeEditorRef.current = handle.current;
-    },
-    [pages, scrollToPage],
-  );
-
-  const registerPageSlotRef = useCallback(
-    (pageId: string) => (el: HTMLElement | null) => {
-      if (el) pageSlotRefs.current.set(pageId, el);
-      else pageSlotRefs.current.delete(pageId);
-    },
-    [],
-  );
-
-  useEffect(() => {
-    const pageId = pages[activePageIndex]?.id;
-    if (!pageId) return;
-    const handle = editorHandlesRef.current.get(pageId);
-    activeEditorRef.current = handle?.current ?? null;
-  }, [pages, activePageIndex, previewVersion]);
-
-  // Autosave snapshot: per-page content + the document title.
-  const getAutosaveSnapshot = useCallback(async () => {
-    const snapshot: {
-      title: string;
-      pages: Array<{ pageId: string; content: EditorOutput; layoutOverride?: PageLayoutOverride | null }>;
-    } = { title, pages: [] };
-    for (const page of pages) {
-      const editor = editorHandlesRef.current.get(page.id)?.current;
-      if (!editor) continue;
-      await editor.isReady;
-      const data = await editor.save();
-      snapshot.pages.push({
-        pageId: page.id,
-        content: data as EditorOutput,
-        layoutOverride: page.layoutOverride,
-      });
-    }
-    return snapshot;
-  }, [pages, title]);
-
-  const autosaveSignal = useMemo(
-    () => `${previewVersion}|${title}`,
-    [previewVersion, title],
-  );
-
-  const autosave = useAutosave({
-    documentId,
-    getSnapshot: getAutosaveSnapshot,
-    changeSignal: autosaveSignal,
-    enabled: hasHydrated,
-  });
-
-  const handleImportClick = useCallback(() => fileInputRef.current?.click(), []);
-
-  const handleFileSelected = useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      e.target.value = "";
-      if (!file) return;
-
-      if (file.size > MAX_DOCX_BYTES) {
-        alert(
-          `That file is too large to import (max ${Math.round(MAX_DOCX_BYTES / 1024 / 1024)} MB).`,
-        );
-        return;
-      }
-
-      setBusy(true);
-      try {
-        // Parse fully BEFORE touching the document: the importer throws on a
-        // bad file, and nothing is deleted unless we have content to show.
-        const data = await importDocx(file);
-        if (!data?.blocks?.length) {
-          throw new Error("The file doesn't contain any content we can import.");
-        }
-        if (
-          !confirm(
-            `Replace the contents of "${title}" with "${file.name}"?\n\nAll ${pages.length} page(s) will be overwritten.`,
-          )
-        ) {
-          return;
-        }
-
-        // Replace current page content with the imported document on page 1.
-        // Delete all other pages first.
-        for (let i = pages.length - 1; i > 0; i--) {
-          const p = pages[i];
-          if (p) {
-            await deletePageMut.mutateAsync({ documentId, pageId: p.id });
-            editorHandlesRef.current.delete(p.id);
-            pageSlotRefs.current.delete(p.id);
-          }
-        }
-        // Reload to get fresh state after deletes.
-        const refreshed = await docQuery.refetch();
-        if (refreshed.data) syncPagesFromDoc(refreshed.data);
-
-        // Render the imported data into the (now sole) first editor.
-        const first = pages[0] ?? refreshed.data?.pages[0];
-        if (first) {
-          const handle = editorHandlesRef.current.get(first.id);
-          const editor = handle?.current;
-          if (editor) {
-            await editor.isReady;
-            await editor.render(sanitizeEditorData(data) as never);
-            bumpPreviews();
-          }
-        }
-        const niceTitle = file.name.replace(/\.docx$/i, "");
-        if (niceTitle) setTitle(niceTitle);
-      } catch (err) {
-        console.error("[importDocx] failed:", err);
-        alert(`Couldn't import that DOCX.\n\n${err instanceof Error ? err.message : String(err)}`);
-      } finally {
-        setBusy(false);
-      }
-    },
-    [bumpPreviews, deletePageMut, docQuery, documentId, pages, title],
-  );
-
-  const handleExportClick = useCallback(async () => {
-    setBusy(true);
-    try {
-      const concat: EditorOutput["blocks"] = [];
-      for (const page of pages) {
-        const editor = editorHandlesRef.current.get(page.id)?.current;
-        if (!editor) continue;
-        await editor.isReady;
-        const data = await editor.save();
-        concat.push(...(data.blocks as EditorOutput["blocks"]));
-      }
-      const blob = await exportDocx(
-        { time: Date.now(), blocks: concat, version: "2.30.7" },
-        { title },
-      );
-      triggerDownload(blob, `${sanitizeFilename(title)}.docx`);
-    } catch (err) {
-      console.error("[exportDocx] failed:", err);
-      alert(`Couldn't export.\n\n${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setBusy(false);
-    }
-  }, [pages, title]);
-
-  const handleLayoutApply = useCallback(
-    async (scope: "default" | "page", nextLayout: PageLayout) => {
-      try {
-        await applyLayout(scope, nextLayout);
-      } catch (err) {
-        console.error("[layout] failed:", err);
-        alert("Couldn't update the page layout. Please try again.");
-      }
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [activePageIndex, defaultLayout, documentId, pages, updateDocMut, upsertPageMut],
-  );
-
-  async function applyLayout(scope: "default" | "page", nextLayout: PageLayout) {
-    if (scope === "default") {
-      // Document-wide default — every page inherits unless overridden.
-      const updated = await updateDocMut.mutateAsync({
-        id: documentId,
-        patch: { defaultLayout: nextLayout },
-      });
-      setDefaultLayout(updated.defaultLayout);
-      return;
-    }
-    // Per-page override: store only the keys that differ from the default
-    // so the inherited "pure" relationship stays clean. If the override
-    // matches the default exactly, we clear it to null.
-    const active = pages[activePageIndex];
-    if (!active) return;
-    // The PUT replaces the page's content too, so we need the live content.
-    // Never fall back to an empty page — that would erase it on the server.
-    const editor = editorHandlesRef.current.get(active.id)?.current;
-    if (!editor) throw new Error("Page editor is not ready yet.");
-    const content = await editor.save();
-    const diff = diffAgainst(defaultLayout, nextLayout);
-    await upsertPageMut.mutateAsync({
-      documentId,
-      pageId: active.id,
-      content: content as EditorOutput,
-      layoutOverride: diff,
-    });
-    // Reflect the override locally without a full refetch to avoid
-    // thrashing every page's editor.
-    setPages((prev) =>
-      prev.map((p, i) =>
-        i === activePageIndex ? { ...p, layoutOverride: diff } : p,
-      ),
-    );
-  }
 
   if (docQuery.isLoading) {
     return <div className="doc-full-loading">Loading document…</div>;
   }
-  if (docQuery.error) {
+  if (docQuery.error || !docQuery.data) {
     return (
       <div className="doc-full-loading">
         Couldn't load this document.{" "}
@@ -475,25 +84,249 @@ export function DocumentEditor({ documentId }: Props) {
       </div>
     );
   }
+  // Keyed so switching documents gives a fresh editor + autosave baseline.
+  return <EditorWorkspace key={documentId} doc={docQuery.data} />;
+}
+
+function EditorWorkspace({ doc }: { doc: FullDocument }) {
+  const navigate = useNavigate();
+  const documentId = doc.id;
+
+  const [title, setTitle] = useState(doc.title);
+  const [layout, setLayout] = useState<PageLayout>(doc.defaultLayout);
+  const [zoom, setZoom] = useState(1);
+  const [busy, setBusy] = useState(false);
+  const [layoutDialogOpen, setLayoutDialogOpen] = useState(false);
+  const [pages, setPages] = useState<PageSummary[]>([]);
+  const [activePage, setActivePage] = useState(0);
+  const [commands, setCommands] = useState<EditorCommands | null>(null);
+
+  const editorRef = useRef<EditorJS | null>(null);
+  const historyRef = useRef<EditorHistory | null>(null);
+  const historyTimerRef = useRef<number | null>(null);
+  const surfaceRef = useRef<DocumentSurfaceHandle>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const styles = useMemo(() => resolveStyles(doc.styles), [doc.styles]);
+  const stylesCss = useMemo(() => stylesToCss(styles, ".tp-document"), [styles]);
+
+  const autosave = useAutosave({
+    documentId,
+    initialRevision: doc.revision,
+    // Baseline is what the server has. Blocks that load-time normalisation
+    // changed (legacy alignment shapes) differ from it, so the first save
+    // after an edit rewrites exactly those — migrating them for good.
+    initialBlocks: doc.blocks as DiffBlock[],
+    getBlocks: async () => (editorRef.current ? readBlocks(editorRef.current) : null),
+  });
+
+  // ── Editor lifecycle ─────────────────────────────────────────────────
+
+  const handleReady = useCallback((editor: EditorJS) => {
+    editorRef.current = editor;
+    const history = new EditorHistory(editor);
+    historyRef.current = history;
+    void history.record();
+    const root = document.querySelector<HTMLElement>(".tp-document");
+    setCommands(new EditorCommands(editor, history, root ?? document.body));
+  }, []);
+
+  useEffect(() => () => commands?.dispose(), [commands]);
+
+  const handleChange = useCallback(() => {
+    autosave.markDirty();
+    // Group a burst of typing into one undo step.
+    if (historyTimerRef.current !== null) window.clearTimeout(historyTimerRef.current);
+    historyTimerRef.current = window.setTimeout(() => {
+      historyTimerRef.current = null;
+      void historyRef.current?.record();
+    }, 500);
+  }, [autosave]);
+
+  const handleKeyCommand = useCallback(
+    (command: SurfaceKeyCommand) => {
+      if (!commands) return;
+      if (command === "undo") void commands.undo();
+      else if (command === "redo") void commands.redo();
+      else void commands.insertPageBreak();
+    },
+    [commands],
+  );
+
+  // ── Title (metadata, saved separately from content) ──────────────────
+
+  const savedTitleRef = useRef(doc.title);
+  useEffect(() => {
+    if (title === savedTitleRef.current) return;
+    const timer = window.setTimeout(() => {
+      const next = title.trim() || "Untitled document";
+      updateDocument(documentId, { title: next })
+        .then(() => {
+          savedTitleRef.current = title;
+        })
+        .catch((err) => console.error("[title] save failed:", err));
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [documentId, title]);
+
+  // ── Page navigation ──────────────────────────────────────────────────
+
+  const stride = (pageSize(layout).height + PAGE_GAP) * zoom;
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    // The page under the upper third of the viewport.
+    const probe = el.scrollTop + el.clientHeight / 3;
+    setActivePage(Math.max(0, Math.min(Math.floor(probe / stride), pages.length - 1)));
+  }, [pages.length, stride]);
+
+  const selectPage = useCallback((index: number) => {
+    setActivePage(index);
+    surfaceRef.current?.scrollToPage(index);
+  }, []);
+
+  // ── Import / export ──────────────────────────────────────────────────
+
+  const handleImportClick = useCallback(() => fileInputRef.current?.click(), []);
+
+  const handleFileSelected = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      e.target.value = "";
+      const editor = editorRef.current;
+      if (!file || !editor) return;
+
+      if (file.size > MAX_DOCX_BYTES) {
+        alert(`That file is too large to import (max ${Math.round(MAX_DOCX_BYTES / 1024 / 1024)} MB).`);
+        return;
+      }
+
+      setBusy(true);
+      try {
+        // Parse fully before touching anything — the importer throws on a
+        // bad file and nothing is replaced unless there's content.
+        const parsed = await parseDocx(file);
+        // Keep the source's explicit page breaks.
+        const blocks = parsed.pages.flatMap((page, i) =>
+          i === 0 ? page.blocks : [{ type: "pageBreak", data: {} }, ...page.blocks],
+        ) as EditorBlock[];
+        if (!blocks.some((b) => b.type !== "pageBreak")) {
+          throw new Error("The file doesn't contain any content we can import.");
+        }
+        if (!confirm(`Replace the contents of "${title}" with "${file.name}"?`)) return;
+
+        await historyRef.current?.record();
+        await editor.render({
+          time: Date.now(),
+          blocks: sanitizeEditorData(normalizeBlocks(blocks)),
+        });
+        autosave.markDirty();
+        await historyRef.current?.reset();
+
+        // Headers / footers and page setup are document metadata. They
+        // aren't rendered yet (headers & sections come in Phase 3), but
+        // keep them so nothing from the source file is lost.
+        const nextLayout: PageLayout = parsed.defaultLayout
+          ? { ...layout, ...parsed.defaultLayout }
+          : layout;
+        const meta = await updateDocument(documentId, {
+          headerBlocks: parsed.headerBlocks,
+          footerBlocks: parsed.footerBlocks,
+          defaultLayout: nextLayout,
+        });
+        setLayout(meta.defaultLayout);
+
+        const niceTitle = file.name.replace(/\.docx$/i, "");
+        if (niceTitle) setTitle(niceTitle);
+      } catch (err) {
+        console.error("[importDocx] failed:", err);
+        alert(`Couldn't import that DOCX.\n\n${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [autosave, documentId, layout, title],
+  );
+
+  const handleExportClick = useCallback(async () => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    setBusy(true);
+    try {
+      const out = await editor.save();
+      const blob = await exportDocx(
+        { time: Date.now(), blocks: out.blocks as never, version: out.version },
+        { title },
+      );
+      triggerDownload(blob, `${sanitizeFilename(title)}.docx`);
+    } catch (err) {
+      console.error("[exportDocx] failed:", err);
+      alert(`Couldn't export.\n\n${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [title]);
+
+  // ── Layout ───────────────────────────────────────────────────────────
+
+  const handleLayoutApply = useCallback(
+    async (next: PageLayout) => {
+      const meta = await updateDocument(documentId, { defaultLayout: next });
+      setLayout(meta.defaultLayout);
+    },
+    [documentId],
+  );
+
+  const handleBack = useCallback(async () => {
+    await autosave.saveNow().catch(() => undefined);
+    navigate({ to: "/" });
+  }, [autosave, navigate]);
+
+  const handleKeepMine = useCallback(async () => {
+    if (
+      !confirm(
+        "Overwrite the other version with yours?\n\nChanges made elsewhere since you opened this document will be lost.",
+      )
+    ) {
+      return;
+    }
+    await autosave.overwriteServer();
+  }, [autosave]);
 
   return (
     <div className="doc-root">
       <DocumentHeader
         title={title}
         onTitleChange={setTitle}
-        pageCount={pages.length}
+        pageCount={pages.length || 1}
         zoom={zoom}
         onZoomChange={setZoom}
         onImportClick={handleImportClick}
         onExportClick={handleExportClick}
         onSaveClick={() => void autosave.saveNow()}
-        onBackClick={() => navigate({ to: "/" })}
+        onBackClick={() => void handleBack()}
         onLayoutClick={() => setLayoutDialogOpen(true)}
-        layout={defaultLayout}
+        layout={layout}
         autosaveStatus={autosave.status}
         lastSavedAt={autosave.lastSavedAt}
         busy={busy}
       />
+
+      {autosave.status === "conflict" && (
+        <div className="doc-conflict" role="alert">
+          <span>
+            This document was changed in another tab or on another device. Your edits here
+            aren't being saved.
+          </span>
+          <button type="button" className="doc-btn" onClick={() => window.location.reload()}>
+            Load latest version
+          </button>
+          <button type="button" className="doc-btn" onClick={() => void handleKeepMine()}>
+            Keep my version
+          </button>
+        </div>
+      )}
 
       <input
         ref={fileInputRef}
@@ -503,66 +336,30 @@ export function DocumentEditor({ documentId }: Props) {
         onChange={handleFileSelected}
       />
 
-      <EditorRibbon activeEditorRef={activeEditorRef} />
+      <EditorRibbon commands={commands} />
 
       <div className="doc-body">
         <ThumbnailsSidebar
-          pageIds={pages.map((p) => p.id)}
-          editors={editorsForSidebar}
-          activePageIndex={activePageIndex}
+          pages={pages}
+          activePageIndex={activePage}
           onSelectPage={selectPage}
-          onAddPage={addPage}
-          onDeletePage={deletePage}
-          version={previewVersion}
+          onInsertPageBreak={() => void commands?.insertPageBreak()}
         />
 
-        <main className="doc-scroll" ref={scrollRef}>
+        <main className="doc-scroll" ref={scrollRef} onScroll={handleScroll}>
           <div className="doc-pages-column">
-            {pages.map((page, index) => {
-              const effectiveLayout: PageLayout = page.layoutOverride
-                ? { ...defaultLayout, ...page.layoutOverride }
-                : defaultLayout;
-              return (
-                <div
-                  key={page.id}
-                  ref={registerPageSlotRef(page.id)}
-                  className="doc-page-slot"
-                  style={{
-                    transform: zoom !== 1 ? `scale(${zoom})` : undefined,
-                    transformOrigin: "top left",
-                    marginBottom: 24 * zoom,
-                  }}
-                  onFocusCapture={handlePageFocus(page.id, index)}
-                  onClick={handlePageFocus(page.id, index)}
-                >
-                  <div className="doc-page">
-                    <div className="doc-page-badge">Page {index + 1}</div>
-                    <PageCanvas layout={effectiveLayout}>
-                      <EditorJSComponent
-                        pageIndex={index}
-                        data={page.initialData}
-                        editorRef={getOrCreateHandle(page.id)}
-                        onChange={handleChange(page.id)}
-                        onContentOverflow={() => void handleOverflow(page.id)}
-                        onImageUpload={uploadImage}
-                      />
-                    </PageCanvas>
-                  </div>
-                </div>
-              );
-            })}
-
-            <button
-              type="button"
-              className="add-page-inline"
-              onClick={addPage}
-              style={{
-                transform: zoom !== 1 ? `scale(${zoom})` : undefined,
-                transformOrigin: "top left",
-              }}
-            >
-              + Add page
-            </button>
+            <DocumentSurface
+              ref={surfaceRef}
+              initialBlocks={doc.blocks}
+              layout={layout}
+              zoom={zoom}
+              stylesCss={stylesCss}
+              onReady={handleReady}
+              onChange={handleChange}
+              onImageUpload={uploadImage}
+              onPagesChange={setPages}
+              onKeyCommand={handleKeyCommand}
+            />
           </div>
         </main>
       </div>
@@ -570,10 +367,7 @@ export function DocumentEditor({ documentId }: Props) {
       <LayoutDialog
         open={layoutDialogOpen}
         onClose={() => setLayoutDialogOpen(false)}
-        defaultLayout={defaultLayout}
-        currentPageOverride={pages[activePageIndex]?.layoutOverride ?? null}
-        currentPageIndex={activePageIndex}
-        totalPages={pages.length}
+        defaultLayout={layout}
         onApply={handleLayoutApply}
       />
     </div>

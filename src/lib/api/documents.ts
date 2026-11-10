@@ -14,17 +14,8 @@ export interface PageLayout {
   marginLeft: number;
 }
 
-export interface PageLayoutOverride {
-  paperSize?: PaperSize;
-  orientation?: Orientation;
-  marginTop?: number;
-  marginRight?: number;
-  marginBottom?: number;
-  marginLeft?: number;
-}
-
 export interface EditorBlock {
-  id?: string;
+  id: string;
   type: string;
   data: Record<string, unknown>;
   tunes?: Record<string, unknown>;
@@ -36,32 +27,30 @@ export interface EditorOutput {
   version?: string;
 }
 
-export interface DocumentPage {
+/** Document metadata — everything except the content blocks. */
+export interface DocumentMeta {
   id: string;
-  pageIndex: number;
-  content: EditorOutput;
-  layoutOverride: PageLayoutOverride | null;
+  title: string;
+  /** Increments on every content save; sent back as `baseRevision`. */
+  revision: number;
+  defaultLayout: PageLayout;
+  headerBlocks: unknown[];
+  footerBlocks: unknown[];
+  /** Named-style overrides (see lib/editor/styles/namedStyles.ts). */
+  styles: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
 }
 
-export interface FullDocument {
-  id: string;
-  title: string;
-  defaultLayout: PageLayout;
-  headerBlocks: unknown[];
-  footerBlocks: unknown[];
-  pageIds: string[];
-  pages: DocumentPage[];
-  createdAt: string;
-  updatedAt: string;
+export interface FullDocument extends DocumentMeta {
+  blocks: EditorBlock[];
 }
 
 export interface DocumentListItem {
   id: string;
   title: string;
-  pageCount: number;
   defaultLayout: PageLayout;
+  blockCount: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -76,7 +65,7 @@ export function getDocument(id: string, signal?: AbortSignal): Promise<FullDocum
 
 export function createDocument(
   title: string,
-  defaultLayout?: PageLayoutOverride,
+  defaultLayout?: Partial<PageLayout>,
 ): Promise<FullDocument> {
   return api<FullDocument>("/documents", {
     method: "POST",
@@ -86,42 +75,35 @@ export function createDocument(
 
 export interface UpdateDocumentPatch {
   title?: string;
-  defaultLayout?: PageLayoutOverride;
+  defaultLayout?: Partial<PageLayout>;
   headerBlocks?: unknown[];
   footerBlocks?: unknown[];
+  styles?: Record<string, unknown>;
 }
 
-export function updateDocument(id: string, patch: UpdateDocumentPatch): Promise<FullDocument> {
-  return api<FullDocument>(`/documents/${id}`, { method: "PATCH", body: patch });
+export function updateDocument(id: string, patch: UpdateDocumentPatch): Promise<DocumentMeta> {
+  return api<DocumentMeta>(`/documents/${id}`, { method: "PATCH", body: patch });
 }
 
 export function deleteDocument(id: string): Promise<void> {
   return api<void>(`/documents/${id}`, { method: "DELETE" });
 }
 
-export function appendPage(documentId: string): Promise<FullDocument> {
-  return api<FullDocument>(`/documents/${documentId}/pages`, { method: "POST" });
+export interface ContentSave {
+  baseRevision: number;
+  upserts: EditorBlock[];
+  deletes: string[];
+  /** Required when blocks are added, removed or reordered. */
+  order?: string[];
 }
 
-export function upsertPage(
-  documentId: string,
-  pageId: string,
-  content: EditorOutput,
-  layoutOverride: PageLayoutOverride | null = null,
-): Promise<DocumentPage> {
-  return api<DocumentPage>(`/documents/${documentId}/pages/${pageId}`, {
-    method: "PUT",
-    body: { content, layoutOverride },
-  });
-}
-
-export function deletePage(documentId: string, pageId: string): Promise<void> {
-  return api<void>(`/documents/${documentId}/pages/${pageId}`, { method: "DELETE" });
-}
-
-export function reorderPages(documentId: string, pageIds: string[]): Promise<FullDocument> {
-  return api<FullDocument>(`/documents/${documentId}/pages/reorder`, {
-    method: "POST",
-    body: { pageIds },
-  });
+/**
+ * Save a block-level diff. Rejects with ApiError 409 `revision_conflict`
+ * when the document changed since `baseRevision` (another tab / device).
+ */
+export function saveContent(
+  id: string,
+  body: ContentSave,
+): Promise<{ revision: number; updatedAt: string }> {
+  return api(`/documents/${id}/content`, { method: "PUT", body });
 }

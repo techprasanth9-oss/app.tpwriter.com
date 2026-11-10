@@ -1,105 +1,99 @@
-import { useCallback, useRef, type MouseEvent } from "react";
-import type EditorJS from "@editorjs/editorjs";
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import type { BlockState, EditorCommands } from "~/lib/editor/commands";
+import type { Alignment } from "~/lib/editor/format/paragraphFormat";
+import { DEFAULT_STYLES, type StyleId } from "~/lib/editor/styles/namedStyles";
 
 /**
- * Fixed toolbar above the paper canvas. Common commands one click away.
- * Inline actions (bold/italic/underline/strike + alignment) use
- * document.execCommand (EditorJS uses contentEditable and respects it).
- * Block actions (insert, convert) go through the EditorJS block API.
+ * Fixed toolbar above the document. Every button goes through
+ * EditorCommands so changes land in block data / tunes and persist.
  */
 
 interface Props {
-  activeEditorRef: React.MutableRefObject<EditorJS | null>;
+  commands: EditorCommands | null;
 }
 
-const HEADING_OPTIONS = [
-  { label: "Paragraph", type: "paragraph", data: {} },
-  { label: "Heading 1", type: "header", data: { level: 1 } },
-  { label: "Heading 2", type: "header", data: { level: 2 } },
-  { label: "Heading 3", type: "header", data: { level: 3 } },
-  { label: "Heading 4", type: "header", data: { level: 4 } },
-] as const;
+const STYLE_OPTIONS: StyleId[] = [
+  "normal",
+  "title",
+  "subtitle",
+  "heading1",
+  "heading2",
+  "heading3",
+  "heading4",
+  "quote",
+];
 
-export function EditorRibbon({ activeEditorRef }: Props) {
+const ALIGN_BUTTONS: Array<{ value: Alignment; label: string; glyph: string }> = [
+  { value: "left", label: "Align left", glyph: "⇤" },
+  { value: "center", label: "Align center", glyph: "⇔" },
+  { value: "right", label: "Align right", glyph: "⇥" },
+  { value: "justify", label: "Justify", glyph: "☰" },
+];
+
+const LINE_SPACING = [1, 1.15, 1.5, 2] as const;
+
+const EMPTY_STATE: BlockState = { type: null, styleId: "normal", alignment: "left", indent: 0 };
+
+export function EditorRibbon({ commands }: Props) {
   const colorInputRef = useRef<HTMLInputElement>(null);
+  const [state, setState] = useState<BlockState>(EMPTY_STATE);
 
-  const exec = useCallback(
-    (command: string, value?: string) => (e: MouseEvent) => {
-      e.preventDefault();
-      try {
-        document.execCommand(command, false, value);
-      } catch {
-        /* execCommand is deprecated but still ships in all browsers */
-      }
-    },
-    [],
-  );
+  // Track the caret's block so the ribbon shows what's active.
+  useEffect(() => {
+    if (!commands) return;
+    let frame = 0;
+    const refresh = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => setState(commands.blockState()));
+    };
+    document.addEventListener("selectionchange", refresh);
+    document.addEventListener("keyup", refresh);
+    document.addEventListener("mouseup", refresh);
+    refresh();
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener("selectionchange", refresh);
+      document.removeEventListener("keyup", refresh);
+      document.removeEventListener("mouseup", refresh);
+    };
+  }, [commands]);
 
-  const insertBlock = useCallback(
-    async (type: string, data: Record<string, unknown> = {}) => {
-      const editor = activeEditorRef.current;
-      if (!editor) return;
-      await editor.isReady;
-      const currentIndex = editor.blocks.getCurrentBlockIndex();
-      const targetIndex = currentIndex >= 0 ? currentIndex + 1 : 0;
-      editor.blocks.insert(type, data, undefined, targetIndex, true);
-    },
-    [activeEditorRef],
-  );
+  /** Run a command, then refresh the active state. */
+  const run = (fn: (c: EditorCommands) => unknown) => async (e?: MouseEvent) => {
+    e?.preventDefault();
+    if (!commands) return;
+    await fn(commands);
+    setState(commands.blockState());
+  };
 
-  const convertCurrent = useCallback(
-    async (type: string, data: Record<string, unknown> = {}) => {
-      const editor = activeEditorRef.current;
-      if (!editor) return;
-      await editor.isReady;
-      const block = editor.blocks.getBlockByIndex(
-        editor.blocks.getCurrentBlockIndex(),
-      );
-      if (!block) return;
-      try {
-        await editor.blocks.convert(block.id, type, data);
-      } catch (err) {
-        console.debug("[ribbon] convert failed:", err);
-      }
-    },
-    [activeEditorRef],
-  );
-
-  const applyColor = useCallback((color: string) => {
-    try {
-      document.execCommand("styleWithCSS", false, "true");
-      document.execCommand("foreColor", false, color);
-    } catch {
-      /* no-op */
-    }
-  }, []);
+  const disabled = !commands;
 
   return (
     <div className="ribbon" role="toolbar" aria-label="Editor toolbar">
+      <RibbonButton onClick={run((c) => c.undo())} label="Undo (⌘Z)" disabled={disabled}>↶</RibbonButton>
+      <RibbonButton onClick={run((c) => c.redo())} label="Redo (⇧⌘Z)" disabled={disabled}>↷</RibbonButton>
+
+      <RibbonDivider />
+
       <select
         className="ribbon-select"
-        onMouseDown={(e) => e.preventDefault()}
-        onChange={(e) => {
-          const opt = HEADING_OPTIONS.find((o) => o.label === e.target.value);
-          if (!opt) return;
-          convertCurrent(opt.type, opt.data as Record<string, unknown>);
-          e.target.value = "";
-        }}
-        defaultValue=""
-        aria-label="Block type"
+        value={state.styleId}
+        disabled={disabled}
+        onMouseDown={(e) => e.stopPropagation()}
+        onChange={(e) => void run((c) => c.applyStyle(e.target.value as StyleId))()}
+        aria-label="Paragraph style"
       >
-        <option value="" disabled>Style</option>
-        {HEADING_OPTIONS.map((o) => (
-          <option key={o.label} value={o.label}>{o.label}</option>
+        {STYLE_OPTIONS.map((id) => (
+          <option key={id} value={id}>{DEFAULT_STYLES[id].label}</option>
         ))}
       </select>
 
       <RibbonDivider />
 
-      <RibbonButton onClick={exec("bold")} label="Bold (⌘B)" bold>B</RibbonButton>
-      <RibbonButton onClick={exec("italic")} label="Italic (⌘I)" italic>I</RibbonButton>
-      <RibbonButton onClick={exec("underline")} label="Underline (⌘U)" underline>U</RibbonButton>
-      <RibbonButton onClick={exec("strikeThrough")} label="Strikethrough" strike>S</RibbonButton>
+      <RibbonButton onClick={run((c) => c.inline("bold"))} label="Bold (⌘B)" disabled={disabled} bold>B</RibbonButton>
+      <RibbonButton onClick={run((c) => c.inline("italic"))} label="Italic (⌘I)" disabled={disabled} italic>I</RibbonButton>
+      <RibbonButton onClick={run((c) => c.inline("underline"))} label="Underline (⌘U)" disabled={disabled} underline>U</RibbonButton>
+      <RibbonButton onClick={run((c) => c.inline("strikeThrough"))} label="Strikethrough" disabled={disabled} strike>S</RibbonButton>
 
       <input
         ref={colorInputRef}
@@ -107,7 +101,7 @@ export function EditorRibbon({ activeEditorRef }: Props) {
         className="ribbon-color-input"
         aria-hidden
         tabIndex={-1}
-        onChange={(e) => applyColor(e.target.value)}
+        onChange={(e) => commands?.textColor(e.target.value)}
       />
       <RibbonButton
         onClick={(e) => {
@@ -115,79 +109,65 @@ export function EditorRibbon({ activeEditorRef }: Props) {
           colorInputRef.current?.click();
         }}
         label="Text color"
+        disabled={disabled}
       >
         <span className="ribbon-color-swatch" />
         <span>A</span>
       </RibbonButton>
-      <RibbonButton
-        onClick={(e) => {
-          e.preventDefault();
-          try {
-            document.execCommand("styleWithCSS", false, "true");
-            document.execCommand("hiliteColor", false, "#fef08a");
-          } catch {
-            /* ignore */
-          }
-        }}
-        label="Highlight"
-      >
+      <RibbonButton onClick={run((c) => c.highlight("#fef08a"))} label="Highlight" disabled={disabled}>
         <span className="ribbon-mark">H</span>
+      </RibbonButton>
+      <RibbonButton onClick={run((c) => c.inline("removeFormat"))} label="Clear formatting" disabled={disabled}>
+        T̸
       </RibbonButton>
 
       <RibbonDivider />
 
-      <RibbonButton onClick={exec("justifyLeft")} label="Align left">⇤</RibbonButton>
-      <RibbonButton onClick={exec("justifyCenter")} label="Align center">⇔</RibbonButton>
-      <RibbonButton onClick={exec("justifyRight")} label="Align right">⇥</RibbonButton>
-      <RibbonButton onClick={exec("justifyFull")} label="Justify">☰</RibbonButton>
+      {ALIGN_BUTTONS.map((a) => (
+        <RibbonButton
+          key={a.value}
+          onClick={run((c) => c.setAlignment(a.value))}
+          label={a.label}
+          active={state.alignment === a.value}
+          disabled={disabled}
+        >
+          {a.glyph}
+        </RibbonButton>
+      ))}
+
+      <select
+        className="ribbon-select ribbon-select-narrow"
+        value=""
+        disabled={disabled}
+        onMouseDown={(e) => e.stopPropagation()}
+        onChange={(e) => {
+          const v = e.target.value;
+          void run((c) => c.setLineHeight(v === "default" ? undefined : Number(v)))();
+        }}
+        aria-label="Line spacing"
+        title="Line spacing"
+      >
+        <option value="" disabled>↕</option>
+        <option value="default">Default</option>
+        {LINE_SPACING.map((v) => (
+          <option key={v} value={v}>{v}</option>
+        ))}
+      </select>
+
+      <RibbonButton onClick={run((c) => c.changeIndent(-1))} label="Decrease indent" disabled={disabled || state.indent === 0}>⇠</RibbonButton>
+      <RibbonButton onClick={run((c) => c.changeIndent(1))} label="Increase indent" disabled={disabled}>⇢</RibbonButton>
 
       <RibbonDivider />
 
-      <RibbonButton
-        onClick={(e) => {
-          e.preventDefault();
-          convertCurrent("list", { style: "unordered" });
-        }}
-        label="Bullet list"
-      >• ≡</RibbonButton>
-      <RibbonButton
-        onClick={(e) => {
-          e.preventDefault();
-          convertCurrent("list", { style: "ordered" });
-        }}
-        label="Numbered list"
-      >1. ≡</RibbonButton>
+      <RibbonButton onClick={run((c) => c.toggleList("unordered"))} label="Bullet list" disabled={disabled}>• ≡</RibbonButton>
+      <RibbonButton onClick={run((c) => c.toggleList("ordered"))} label="Numbered list" disabled={disabled}>1. ≡</RibbonButton>
 
       <RibbonDivider />
 
-      <RibbonButton
-        onClick={(e) => {
-          e.preventDefault();
-          insertBlock("table");
-        }}
-        label="Insert table"
-      >Table</RibbonButton>
-      <RibbonButton
-        onClick={(e) => {
-          e.preventDefault();
-          insertBlock("image");
-        }}
-        label="Insert image"
-      >Image</RibbonButton>
-      <RibbonButton
-        onClick={(e) => {
-          e.preventDefault();
-          insertBlock("horizontalLine");
-        }}
-        label="Insert divider"
-      >—</RibbonButton>
-      <RibbonButton
-        onClick={(e) => {
-          e.preventDefault();
-          insertBlock("delimiter");
-        }}
-        label="Insert section break"
-      >⁂</RibbonButton>
+      <RibbonButton onClick={run((c) => c.insertBlock("table"))} label="Insert table" disabled={disabled}>Table</RibbonButton>
+      <RibbonButton onClick={run((c) => c.insertBlock("image"))} label="Insert image" disabled={disabled}>Image</RibbonButton>
+      <RibbonButton onClick={run((c) => c.insertBlock("horizontalLine"))} label="Insert horizontal line" disabled={disabled}>—</RibbonButton>
+      <RibbonButton onClick={run((c) => c.insertPageBreak())} label="Page break (⌘/Ctrl + Enter)" disabled={disabled}>⤓</RibbonButton>
     </div>
   );
 }
@@ -195,7 +175,9 @@ export function EditorRibbon({ activeEditorRef }: Props) {
 interface RibbonButtonProps {
   onClick: (e: MouseEvent) => void;
   label: string;
-  children: React.ReactNode;
+  children: ReactNode;
+  active?: boolean;
+  disabled?: boolean;
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;
@@ -206,6 +188,8 @@ function RibbonButton({
   onClick,
   label,
   children,
+  active,
+  disabled,
   bold,
   italic,
   underline,
@@ -214,19 +198,18 @@ function RibbonButton({
   return (
     <button
       type="button"
-      className="ribbon-btn"
+      className={`ribbon-btn${active ? " ribbon-btn-active" : ""}`}
+      // Keep focus (and the caret) in the document.
       onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
       title={label}
       aria-label={label}
+      aria-pressed={active ?? undefined}
+      disabled={disabled}
       style={{
         fontWeight: bold ? 700 : undefined,
         fontStyle: italic ? "italic" : undefined,
-        textDecoration: underline
-          ? "underline"
-          : strike
-            ? "line-through"
-            : undefined,
+        textDecoration: underline ? "underline" : strike ? "line-through" : undefined,
       }}
     >
       {children}

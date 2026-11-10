@@ -131,18 +131,22 @@ function AutosaveIndicator({
   const label =
     status === "saving"
       ? "Saving…"
-      : status === "error"
-        ? "Save failed"
-        : status === "saved"
-          ? lastSavedAt
-            ? `Saved ${formatRelative(lastSavedAt)}`
-            : "Saved"
-          : "";
+      : status === "pending"
+        ? "Unsaved changes"
+        : status === "error"
+          ? "Offline — retrying…"
+          : status === "conflict"
+            ? "Not saved — conflict"
+            : status === "saved"
+              ? lastSavedAt
+                ? `Saved ${formatRelative(lastSavedAt)}`
+                : "Saved"
+              : "";
   if (!label) return null;
   const cls =
-    status === "error"
+    status === "error" || status === "conflict"
       ? "doc-save-status doc-save-status-error"
-      : status === "saving"
+      : status === "saving" || status === "pending"
         ? "doc-save-status doc-save-status-saving"
         : "doc-save-status doc-save-status-saved";
   return <span className={cls}>{label}</span>;

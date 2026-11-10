@@ -1,83 +1,42 @@
-import type EditorJS from "@editorjs/editorjs";
-import { useEffect, useState } from "react";
-
-interface PageSummary {
-  id: string;
-  blockCount: number;
-  firstHeading: string | null;
-  firstParagraph: string | null;
-}
+import type { PageSummary } from "~/lib/editor/pagination/usePagination";
 
 interface Props {
-  pageIds: string[];
-  editors: Map<string, EditorJS>;
+  pages: PageSummary[];
   activePageIndex: number;
   onSelectPage: (index: number) => void;
-  onAddPage: () => void;
-  onDeletePage: (index: number) => void;
-  version: number;
+  onInsertPageBreak: () => void;
 }
 
+/**
+ * Page navigator. Pages are computed by the paginator, so this only
+ * reflects them — there's nothing to add or delete per page. "New page"
+ * inserts a page break, as in a word processor.
+ */
 export function ThumbnailsSidebar({
-  pageIds,
-  editors,
+  pages,
   activePageIndex,
   onSelectPage,
-  onAddPage,
-  onDeletePage,
-  version,
+  onInsertPageBreak,
 }: Props) {
-  const [summaries, setSummaries] = useState<PageSummary[]>([]);
-
-  useEffect(() => {
-    const handle = window.setTimeout(() => void refresh(), 300);
-    return () => window.clearTimeout(handle);
-
-    async function refresh() {
-      const next: PageSummary[] = [];
-      for (const id of pageIds) {
-        const editor = editors.get(id);
-        if (!editor) {
-          next.push({ id, blockCount: 0, firstHeading: null, firstParagraph: null });
-          continue;
-        }
-        try {
-          await editor.isReady;
-          const data = await editor.save();
-          next.push(summarise(id, data.blocks));
-        } catch {
-          next.push({ id, blockCount: 0, firstHeading: null, firstParagraph: null });
-        }
-      }
-      setSummaries(next);
-    }
-  }, [pageIds, editors, version]);
-
   return (
-    <aside className="thumbs-sidebar" aria-label="Page thumbnails">
+    <aside className="thumbs-sidebar" aria-label="Pages">
       <div className="thumbs-scroll">
-        {pageIds.map((id, index) => {
-          const summary = summaries[index];
+        {pages.map((page, index) => {
           const isActive = index === activePageIndex;
           return (
             <button
-              key={id}
+              key={index}
               type="button"
               className={`thumb${isActive ? " thumb-active" : ""}`}
               onClick={() => onSelectPage(index)}
               title={`Go to page ${index + 1}`}
+              aria-current={isActive ? "page" : undefined}
             >
               <div className="thumb-paper">
                 <div className="thumb-paper-inner">
-                  {summary?.firstHeading && (
-                    <div className="thumb-h">{truncate(summary.firstHeading, 32)}</div>
-                  )}
-                  {summary?.firstParagraph && (
-                    <div className="thumb-p">{truncate(summary.firstParagraph, 90)}</div>
-                  )}
-                  {!summary?.firstHeading && !summary?.firstParagraph && (
-                    <div className="thumb-empty">Empty page</div>
-                  )}
+                  {page.heading && <div className="thumb-h">{truncate(page.heading, 32)}</div>}
+                  {page.text && <div className="thumb-p">{truncate(page.text, 90)}</div>}
+                  {!page.heading && !page.text && <div className="thumb-empty">Empty page</div>}
                   <div className="thumb-lines" aria-hidden>
                     <span /><span /><span /><span /><span />
                   </div>
@@ -85,56 +44,22 @@ export function ThumbnailsSidebar({
               </div>
               <div className="thumb-footer">
                 <span className="thumb-index">{index + 1}</span>
-                {pageIds.length > 1 && (
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    className="thumb-delete"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (confirm(`Delete page ${index + 1}?`)) onDeletePage(index);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.stopPropagation();
-                        if (confirm(`Delete page ${index + 1}?`)) onDeletePage(index);
-                      }
-                    }}
-                    title="Delete page"
-                  >×</span>
-                )}
               </div>
             </button>
           );
         })}
       </div>
-      <button type="button" className="thumbs-add-btn" onClick={onAddPage}>
-        + Add page
+      <button
+        type="button"
+        className="thumbs-add-btn"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={onInsertPageBreak}
+        title="Insert a page break after the current paragraph (⌘/Ctrl + Enter)"
+      >
+        + Page break
       </button>
     </aside>
   );
-}
-
-function summarise(
-  id: string,
-  blocks: Array<{ type: string; data?: Record<string, unknown> }>,
-): PageSummary {
-  let firstHeading: string | null = null;
-  let firstParagraph: string | null = null;
-  for (const block of blocks) {
-    const text = String(block.data?.text ?? "");
-    if (block.type === "header" && !firstHeading) firstHeading = stripHtml(text);
-    else if (block.type === "paragraph" && !firstParagraph) firstParagraph = stripHtml(text);
-    if (firstHeading && firstParagraph) break;
-  }
-  return { id, blockCount: blocks.length, firstHeading, firstParagraph };
-}
-
-function stripHtml(html: string): string {
-  // DOMParser builds an inert document: unlike a detached <div> owned by the
-  // live page, `<img onerror>` in it never loads or runs.
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  return (doc.body.textContent || "").trim();
 }
 
 function truncate(s: string, max: number): string {

@@ -1,150 +1,195 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as docsApi from "~/lib/api/documents";
-import type {
-  EditorOutput,
-  PageLayoutOverride,
-} from "~/lib/api/documents";
+import { ApiError } from "~/lib/api/client";
+import {
+  applyDiff,
+  diffContent,
+  isEmptyDiff,
+  stateFromBlocks,
+  type DiffBlock,
+  type SavedState,
+} from "~/lib/editor/contentDiff";
 
-export type AutosaveStatus = "idle" | "saving" | "saved" | "error";
-
-interface PagePatch {
-  pageId: string;
-  content: EditorOutput;
-  layoutOverride?: PageLayoutOverride | null;
-}
+export type AutosaveStatus =
+  | "idle"
+  | "pending"
+  | "saving"
+  | "saved"
+  /** Network / server failure — retrying automatically. */
+  | "error"
+  /** Someone else saved a newer revision; autosave is paused. */
+  | "conflict";
 
 interface Options {
-  documentId: string | undefined;
-  /**
-   * Called by the hook once per debounce window to fetch the full snapshot
-   * to send: title + per-page block arrays. The hook will PATCH the doc
-   * metadata (title) and PUT each page in parallel.
-   */
-  getSnapshot: () => Promise<{
-    title: string;
-    pages: PagePatch[];
-  }>;
-  changeSignal: unknown;
+  documentId: string;
+  /** Server state the editor was loaded from. */
+  initialRevision: number;
+  initialBlocks: DiffBlock[];
+  /** Current editor content, or null if the editor isn't ready. */
+  getBlocks: () => Promise<DiffBlock[] | null>;
   debounceMs?: number;
-  enabled?: boolean;
 }
 
 interface Result {
   status: AutosaveStatus;
   lastSavedAt: Date | null;
   error: string | null;
+  /** Call on every content change. */
+  markDirty: () => void;
   saveNow: () => Promise<void>;
+  /** After a conflict: make the server match this editor ("keep mine"). */
+  overwriteServer: () => Promise<void>;
 }
 
+const MIN_RETRY_MS = 2_000;
+const MAX_RETRY_MS = 60_000;
+
 /**
- * Per-page debounced autosave. Watches `changeSignal`; after `debounceMs`
- * of quiet, calls `getSnapshot()` and persists the title + every page in
- * parallel. Coalesces rapid edits into a single save round.
+ * Debounced, block-level autosave. Each save sends only the blocks that
+ * changed since the last successful save (plus the order when it changed),
+ * guarded by the document revision so two tabs can't silently overwrite
+ * each other.
  */
 export function useAutosave({
   documentId,
-  getSnapshot,
-  changeSignal,
-  debounceMs = 1500,
-  enabled = true,
+  initialRevision,
+  initialBlocks,
+  getBlocks,
+  debounceMs = 1200,
 }: Options): Result {
   const [status, setStatus] = useState<AutosaveStatus>("idle");
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const savedRef = useRef<SavedState>(stateFromBlocks(initialBlocks));
+  const revisionRef = useRef(initialRevision);
   const timerRef = useRef<number | null>(null);
+  const retryRef = useRef<number | null>(null);
+  const retryDelayRef = useRef(MIN_RETRY_MS);
   const inFlightRef = useRef(false);
-  const dirtyAfterSaveRef = useRef(false);
-  const firstRunRef = useRef(true);
+  const dirtyRef = useRef(false);
+  const conflictRef = useRef(false);
+  const getBlocksRef = useRef(getBlocks);
+  getBlocksRef.current = getBlocks;
 
-  const doSave = useCallback(async () => {
-    if (!documentId) return;
+  const clearTimers = () => {
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    if (retryRef.current !== null) window.clearTimeout(retryRef.current);
+    timerRef.current = null;
+    retryRef.current = null;
+  };
+
+  const doSave = useCallback(async (): Promise<void> => {
+    if (conflictRef.current) return;
     if (inFlightRef.current) {
-      dirtyAfterSaveRef.current = true;
+      dirtyRef.current = true;
       return;
     }
+    clearTimers();
     inFlightRef.current = true;
-    setStatus("saving");
-    setError(null);
+    dirtyRef.current = false;
+
     try {
-      const snapshot = await getSnapshot();
-      await docsApi.updateDocument(documentId, { title: snapshot.title });
-      await Promise.all(
-        snapshot.pages.map((p) =>
-          docsApi.upsertPage(
-            documentId,
-            p.pageId,
-            p.content,
-            p.layoutOverride ?? null,
-          ),
-        ),
-      );
+      const blocks = await getBlocksRef.current();
+      if (!blocks) return;
+      const diff = diffContent(savedRef.current, blocks);
+      if (isEmptyDiff(diff)) {
+        setStatus((s) => (s === "pending" || s === "saving" ? "saved" : s));
+        return;
+      }
+      setStatus("saving");
+      const res = await docsApi.saveContent(documentId, {
+        baseRevision: revisionRef.current,
+        ...diff,
+      });
+      savedRef.current = applyDiff(savedRef.current, diff);
+      revisionRef.current = res.revision;
+      retryDelayRef.current = MIN_RETRY_MS;
+      setError(null);
       setStatus("saved");
       setLastSavedAt(new Date());
     } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        conflictRef.current = true;
+        setStatus("conflict");
+        setError("This document was changed somewhere else.");
+        return;
+      }
+      if (err instanceof ApiError && err.status === 400) {
+        // Our idea of the server state drifted (e.g. a save whose response
+        // was lost). Re-read it so the next diff is computed correctly.
+        await resync().catch(() => undefined);
+      }
+      dirtyRef.current = true;
       setStatus("error");
       setError(err instanceof Error ? err.message : String(err));
+      const delay = retryDelayRef.current;
+      retryDelayRef.current = Math.min(delay * 2, MAX_RETRY_MS);
+      retryRef.current = window.setTimeout(() => void doSave(), delay);
     } finally {
       inFlightRef.current = false;
-      if (dirtyAfterSaveRef.current) {
-        dirtyAfterSaveRef.current = false;
-        void doSave();
+      if (dirtyRef.current && !conflictRef.current && retryRef.current === null) {
+        timerRef.current = window.setTimeout(() => void doSave(), debounceMs);
       }
     }
-  }, [documentId, getSnapshot]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [documentId, debounceMs]);
 
-  useEffect(() => {
-    if (!enabled || !documentId) return;
-    if (firstRunRef.current) {
-      firstRunRef.current = false;
-      return;
-    }
+  /** Replace our saved-state baseline with what the server has now. */
+  const resync = useCallback(async () => {
+    const doc = await docsApi.getDocument(documentId);
+    savedRef.current = stateFromBlocks(doc.blocks);
+    revisionRef.current = doc.revision;
+  }, [documentId]);
+
+  const markDirty = useCallback(() => {
+    dirtyRef.current = true;
+    if (conflictRef.current) return;
+    setStatus((s) => (s === "saving" ? s : "pending"));
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-    timerRef.current = window.setTimeout(() => {
-      timerRef.current = null;
-      void doSave();
-    }, debounceMs);
+    timerRef.current = window.setTimeout(() => void doSave(), debounceMs);
+  }, [debounceMs, doSave]);
 
-    return () => {
-      if (timerRef.current !== null) {
-        window.clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-    };
-  }, [changeSignal, debounceMs, doSave, documentId, enabled]);
+  const saveNow = useCallback(() => doSave(), [doSave]);
 
-  // Flush pending save on unmount so last-window edits don't get lost.
+  const overwriteServer = useCallback(async () => {
+    await resync();
+    conflictRef.current = false;
+    setError(null);
+    await doSave();
+  }, [doSave, resync]);
+
+  // Retry as soon as the network comes back.
   useEffect(() => {
-    return () => {
-      if (timerRef.current !== null) {
-        window.clearTimeout(timerRef.current);
-        timerRef.current = null;
-        void doSave();
-      }
+    const onOnline = () => {
+      if (dirtyRef.current && !conflictRef.current) void doSave();
     };
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
   }, [doSave]);
 
-  // Warn before closing the tab while edits are still waiting to be saved
-  // or a save is in flight. The unmount flush above can't run on unload.
+  // Warn before closing the tab with unsaved edits (an unload can't wait
+  // for a save to finish).
   useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (timerRef.current === null && !inFlightRef.current) return;
+      if (!dirtyRef.current && !inFlightRef.current && timerRef.current === null) return;
       void doSave();
       e.preventDefault();
-      // Legacy browsers only show the prompt when returnValue is set.
       e.returnValue = "";
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [doSave]);
 
-  const saveNow = useCallback(async () => {
-    if (timerRef.current !== null) {
-      window.clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-    await doSave();
-  }, [doSave]);
+  // Flush on unmount (navigating back to the list).
+  useEffect(
+    () => () => {
+      const pending = timerRef.current !== null || dirtyRef.current;
+      clearTimers();
+      if (pending) void doSave();
+    },
+    [doSave],
+  );
 
-  return { status, lastSavedAt, error, saveNow };
+  return { status, lastSavedAt, error, markDirty, saveNow, overwriteServer };
 }
