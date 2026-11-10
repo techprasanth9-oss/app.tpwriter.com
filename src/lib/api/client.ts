@@ -16,6 +16,11 @@ const BASE =
   (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/+$/, "") ||
   "/api";
 
+/** Absolute-or-proxied URL for an API path, e.g. `apiUrl("/uploads/x.png")`. */
+export function apiUrl(path: string): string {
+  return `${BASE}${path}`;
+}
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,

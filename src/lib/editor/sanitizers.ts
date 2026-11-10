@@ -11,6 +11,22 @@
  * data link is lost. Keep this file as the single source of truth.
  */
 
+import { isSafeImageUrl, isSafeLinkUrl } from "./safeUrl";
+
+/** `<a>` keeps its href only when the scheme is allow-listed — html-janitor
+ *  filters attribute names, not values, so `javascript:` would pass a plain
+ *  `{ href: true }` rule. */
+export function sanitizeAnchor(el: Element) {
+  const base = { target: true, rel: true, class: true };
+  return isSafeLinkUrl(el.getAttribute("href")) ? { ...base, href: true } : base;
+}
+
+/** `<img>` is dropped entirely unless its src is an allowed image URL. */
+export function sanitizeImage(el: Element) {
+  if (!isSafeImageUrl(el.getAttribute("src"))) return false;
+  return { src: true, alt: true, style: true, class: true, width: true, height: true };
+}
+
 /** Attrs allowed on a `<span class="variable-chip">`. */
 export const VARIABLE_SPAN_SANITIZER = {
   class: true,
@@ -53,5 +69,15 @@ export const BLOCK_INLINE_TAGS = {
   mark: MARK_SANITIZER,
   span: VARIABLE_SPAN_SANITIZER,
   ins: { class: true, "data-label": true, style: true },
-  a: { href: true, target: true, rel: true, class: true },
+  a: sanitizeAnchor,
+};
+
+/** Table cells: inline tags plus the block-level wrappers contenteditable
+ *  produces on Enter, and inline images. */
+export const TABLE_CELL_TAGS = {
+  ...BLOCK_INLINE_TAGS,
+  div: { style: true, class: true },
+  p: { style: true, class: true },
+  font: { color: true, face: true, size: true },
+  img: sanitizeImage,
 };

@@ -16,6 +16,8 @@
  *     no `defaultValue` is present).
  */
 
+import { TABLE_CELL_TAGS } from "../sanitizers";
+
 /** Inline shim for the eSigns i18n layer. */
 function t(key: string, options?: { defaultValue?: string } & Record<string, unknown>): string {
   if (options && typeof options.defaultValue === "string") {
@@ -5023,7 +5025,15 @@ class TableTool {
               wrap.remove();
             }
           });
-        rowData.push(clone.innerHTML);
+        // A formula cell displays its computed value; persist the formula
+        // itself so it re-evaluates on load instead of freezing the number.
+        const formula =
+          cell.dataset.formulaDisplayed === "value" ? cell.dataset.formula : undefined;
+        rowData.push(
+          formula
+            ? formula.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+            : clone.innerHTML,
+        );
 
         const cellStyle: any = {};
         if (cell.style.backgroundColor)
@@ -5088,7 +5098,8 @@ class TableTool {
 
   static get sanitize() {
     return {
-      content: true,
+      // `true` would mean "keep any HTML" — cells get the shared allow-list.
+      content: TABLE_CELL_TAGS,
       withHeading: false,
       headerRows: false,
       hideBorders: false,

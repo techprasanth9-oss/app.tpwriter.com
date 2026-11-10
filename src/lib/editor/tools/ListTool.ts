@@ -1,4 +1,5 @@
 import type { API, BlockTool, BlockToolData } from "@editorjs/editorjs";
+import { BLOCK_INLINE_TAGS } from "../sanitizers";
 
 interface ListItem {
   content: string;
@@ -61,6 +62,15 @@ export class ListTool implements BlockTool {
 
   static get isReadOnlySupported(): boolean {
     return true;
+  }
+
+  /**
+   * Without this, EditorJS falls back to the inline tools' merged config
+   * (no `a`, no `br`), so links and line breaks inside items are stripped
+   * on save. The rule applies to every nested item's `content`.
+   */
+  static get sanitize() {
+    return { items: BLOCK_INLINE_TAGS };
   }
 
   /**

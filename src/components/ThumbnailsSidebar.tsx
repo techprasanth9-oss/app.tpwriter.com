@@ -131,9 +131,10 @@ function summarise(
 }
 
 function stripHtml(html: string): string {
-  const div = document.createElement("div");
-  div.innerHTML = html;
-  return (div.textContent || "").trim();
+  // DOMParser builds an inert document: unlike a detached <div> owned by the
+  // live page, `<img onerror>` in it never loads or runs.
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  return (doc.body.textContent || "").trim();
 }
 
 function truncate(s: string, max: number): string {

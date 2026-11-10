@@ -92,9 +92,15 @@ export class ParagraphTool implements BlockTool {
     const typedData = (data ?? {}) as ParagraphToolData;
     this._data = {
       text: typedData.text || "",
+      // save() writes top-level `alignment` / `indentLevel`; read those first
+      // so settings-panel changes survive a reload. The nested `tunes` shape
+      // is kept as a fallback for older imported data.
       alignment:
-        typedData.tunes?.alignment?.alignment || this.config.defaultAlignment,
-      indentLevel: typedData.tunes?.indentTune?.indentLevel || 0,
+        typedData.alignment ||
+        typedData.tunes?.alignment?.alignment ||
+        this.config.defaultAlignment,
+      indentLevel:
+        typedData.indentLevel ?? typedData.tunes?.indentTune?.indentLevel ?? 0,
     };
 
     this._element = this._createParagraphElement();

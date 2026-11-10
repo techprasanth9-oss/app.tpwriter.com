@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { isSafeLinkUrl } from "../safeUrl";
 /**
  * ImageTool — EditorJS block tool for images.
  *
@@ -635,7 +636,9 @@ export default class ImageTool {
 
     const commitLink = () => {
       const url = linkInput.value.trim();
-      if (!url) {
+      if (!url || !isSafeLinkUrl(url)) {
+        // Reject javascript:/data: and other non-navigational schemes.
+        if (url) linkInput.value = "";
         this.data.link = undefined;
       } else {
         this.data.link = {

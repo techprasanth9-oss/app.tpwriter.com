@@ -1,4 +1,4 @@
-export { importDocx, parseDocx } from "./importer";
+export { importDocx, parseDocx, MAX_DOCX_BYTES } from "./importer";
 export type {
   EditorBlock,
   EditorOutput,

@@ -76,7 +76,7 @@ export class HorizontalLineTool implements BlockTool {
       color: data?.color || this.config.defaultColor,
       alignment: data?.alignment || this.config.defaultAlignment,
       length: data?.length || this.config.defaultLength,
-      indentLevel: data?.tunes?.indentTune?.indentLevel || 0,
+      indentLevel: data?.indentLevel ?? data?.tunes?.indentTune?.indentLevel ?? 0,
     };
 
     this._element = this._createLineElement();

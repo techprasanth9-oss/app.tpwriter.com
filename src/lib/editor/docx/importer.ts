@@ -288,21 +288,72 @@ const OFFICE_FONT_FALLBACKS: Record<string, string[]> = {
   "courier new": ["Courier New", "Courier", "Menlo", "Monaco"],
 };
 
+// ─── Untrusted-input helpers ────────────────────────────────────────────
+// Imported DOCX content is attacker-controlled. Every string that lands
+// in block HTML (text, attribute values, inline CSS) must pass through
+// one of these first.
+
+/** Escape text for use in HTML text content or a quoted attribute. */
+const escapeHtml = (s: string): string =>
+  s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+const HEX6_RE = /^[0-9A-Fa-f]{6}$/;
+
+/**
+ * OOXML colour (`w:color`, `w:fill`, `a:srgbClr`) → "#RRGGBB", or null
+ * for "auto" / anything that isn't a plain 6-digit hex value. Prevents
+ * CSS injection like `000000;background:url(//tracker)`.
+ */
+const hexColor = (v: string | null | undefined): string | null =>
+  v && HEX6_RE.test(v) ? `#${v}` : null;
+
+/** Strip a font name down to characters safe inside a quoted CSS value. */
+const sanitizeFontName = (name: string): string =>
+  name.replace(/[^\w \-.]/g, "").trim();
+
+/**
+ * Allow only http(s) / mailto / tel URLs and in-document `#anchors`.
+ * Returns null for anything else (javascript:, data:, relative paths…).
+ */
+const sanitizeHref = (raw: string | null | undefined): string | null => {
+  if (!raw) return null;
+  // Browsers ignore control chars / whitespace inside the scheme, so
+  // strip them before checking ("java\tscript:" → "javascript:").
+  const v = raw.replace(/[\u0000- \u007F]/g, "");
+  if (!v) return null;
+  if (v.startsWith("#")) return v;
+  if (/^(https?:|mailto:|tel:)/i.test(v)) return v;
+  return null;
+};
+
+const hasOwn = (obj: object, key: string): boolean =>
+  Object.prototype.hasOwnProperty.call(obj, key);
+
 const quoteFontName = (name: string): string => {
   return /\s|[^\w-]/.test(name) ? `'${name}'` : name;
 };
 
 const expandOfficeFontStack = (fontName: string, generic: string): string => {
-  const lookup = OFFICE_FONT_FALLBACKS[fontName.trim().toLowerCase()];
-  const stack = lookup && lookup.length > 0 ? lookup : [fontName];
+  const safeName = sanitizeFontName(fontName);
+  const key = safeName.toLowerCase();
+  const lookup = hasOwn(OFFICE_FONT_FALLBACKS, key)
+    ? OFFICE_FONT_FALLBACKS[key]
+    : undefined;
+  const stack =
+    lookup && lookup.length > 0 ? lookup : safeName ? [safeName] : [];
   const quoted = stack.map(quoteFontName);
-  return `${quoted.join(", ")}, ${generic}`;
+  return quoted.length > 0 ? `${quoted.join(", ")}, ${generic}` : generic;
 };
 
 const processRelationships = async (
   relsXml: string | undefined,
 ): Promise<{ [key: string]: string }> => {
-  const relationships: { [key: string]: string } = {};
+  const relationships: { [key: string]: string } = Object.create(null);
 
   if (relsXml) {
     const relsDoc = new DOMParser().parseFromString(relsXml, "text/xml");
@@ -473,7 +524,7 @@ const parseHeadersAndFooters = async (
   const footerProperties: { [k: string]: any } = {};
 
   const allRelationships: { [headerPath: string]: { [key: string]: string } } =
-    {};
+    Object.create(null);
 
   // Word emits up to three headers (and three footers) per section
   // — for first / even / default page types. When the sender's
@@ -493,7 +544,7 @@ const parseHeadersAndFooters = async (
     const docXml = await zip.file("word/document.xml")?.async("text");
     if (docRelsXml && docXml) {
       const relDoc = new DOMParser().parseFromString(docRelsXml, "text/xml");
-      const relIdToTarget: { [rid: string]: string } = {};
+      const relIdToTarget: { [rid: string]: string } = Object.create(null);
       for (const rel of Array.from(
         relDoc.getElementsByTagName("Relationship"),
       )) {
@@ -558,7 +609,7 @@ const parseHeadersAndFooters = async (
         const basePath = path
           .replace("/_rels/", "/")
           .replace(".xml.rels", ".xml");
-        allRelationships[basePath] = {};
+        allRelationships[basePath] = Object.create(null);
 
         const relsDoc = new DOMParser().parseFromString(relsXml, "text/xml");
         const rels = relsDoc.getElementsByTagName("Relationship");
@@ -611,12 +662,6 @@ const parseHeadersAndFooters = async (
     .sort();
   const fallbackHeaderPath = pickLargest(headerFileNames) || headerFileNames[0];
   const fallbackFooterPath = pickLargest(footerFileNames) || footerFileNames[0];
-  console.log("[DocxParser] header/footer picks", {
-    sectPrHeader: [...allowedHeaderPaths],
-    sectPrFooter: [...allowedFooterPaths],
-    fallbackHeaderPath,
-    fallbackFooterPath,
-  });
 
   for (const path in zip.files) {
     if (path.startsWith("word/header") && path.endsWith(".xml")) {
@@ -633,7 +678,7 @@ const parseHeadersAndFooters = async (
         const headerXml = await zip.file(path)?.async("text");
         if (!headerXml) continue;
 
-        const relationships = allRelationships[path] || {};
+        const relationships = allRelationships[path] || Object.create(null);
 
         for (const [relId, target] of Object.entries(relationships)) {
           if (
@@ -665,10 +710,13 @@ const parseHeadersAndFooters = async (
                     // already taken. Path key is authoritative
                     // for processDrawing's fixed relationship
                     // resolution.
+                    // Build the data URL once; both keys share the
+                    // same string instead of holding two copies.
+                    const dataUrl = `data:${mimeType};base64,${imageData}`;
                     if (!images[relId]) {
-                      images[relId] = `data:${mimeType};base64,${imageData}`;
+                      images[relId] = dataUrl;
                     }
-                    images[imagePath] = `data:${mimeType};base64,${imageData}`;
+                    images[imagePath] = dataUrl;
                   }
                 }
               } catch (error) {
@@ -783,11 +831,6 @@ const parseHeadersAndFooters = async (
               // #0E61AF, bold. Emitting plain text loses all of that
               // and drops the header to default black.
               let titleHtml = "";
-              const escape = (s: string) =>
-                s
-                  .replace(/&/g, "&amp;")
-                  .replace(/</g, "&lt;")
-                  .replace(/>/g, "&gt;");
               const runToStyledSpan = (run: Element, text: string): string => {
                 const rPr = Array.from(run.children).find(
                   (c) => c.namespaceURI === WORD_NS && c.localName === "rPr",
@@ -809,7 +852,8 @@ const parseHeadersAndFooters = async (
                         const v =
                           p.getAttributeNS(WORD_NS, "val") ||
                           p.getAttribute("w:val");
-                        if (v && v !== "auto") styles.push(`color:#${v}`);
+                        const c = hexColor(v);
+                        if (c) styles.push(`color:${c}`);
                         break;
                       }
                       case "sz": {
@@ -854,7 +898,7 @@ const parseHeadersAndFooters = async (
                     }
                   }
                 }
-                let html = escape(text);
+                let html = escapeHtml(text);
                 if (bold) html = `<b>${html}</b>`;
                 if (italic) html = `<i>${html}</i>`;
                 return styles.length > 0
@@ -1001,11 +1045,6 @@ const parseHeadersAndFooters = async (
                   data: { text: titleHtml },
                 });
               }
-              console.log("[DocxParser:header] direct-extract", path, {
-                hasLogo: !!logoImageBlock,
-                logoUrlSample: (logoImageBlock?.data?.url || "").slice(0, 40),
-                titleHtml: titleHtml.slice(0, 120),
-              });
               // Skip the run-by-run drawing loop below — the direct
               // extract handled logo + title. Continue to the next
               // paragraph in the header.
@@ -1349,7 +1388,7 @@ const parseHeadersAndFooters = async (
         const footerXml = await zip.file(path)?.async("text");
         if (!footerXml) continue;
 
-        const relationships = allRelationships[path] || {};
+        const relationships = allRelationships[path] || Object.create(null);
 
         for (const [relId, target] of Object.entries(relationships)) {
           if (
@@ -1369,8 +1408,9 @@ const parseHeadersAndFooters = async (
                     imagePath.split(".").pop()?.toLowerCase() || "";
                   const mimeType = getMimeType(imageType);
                   if (mimeType) {
-                    images[relId] = `data:${mimeType};base64,${imageData}`;
-                    images[imagePath] = `data:${mimeType};base64,${imageData}`;
+                    const dataUrl = `data:${mimeType};base64,${imageData}`;
+                    images[relId] = dataUrl;
+                    images[imagePath] = dataUrl;
                   }
                 }
               } catch (error) {
@@ -2046,7 +2086,7 @@ const processHyperlink = (hyperlink: Element, relationships: any): string => {
     let href = "";
 
     const relId = hyperlink.getAttributeNS(RELATIONSHIP_NS, "id");
-    if (relId && relationships[relId]) {
+    if (relId && typeof relationships[relId] === "string") {
       href = relationships[relId];
     }
 
@@ -2067,7 +2107,7 @@ const processHyperlink = (hyperlink: Element, relationships: any): string => {
     for (const run of textRuns) {
       const textElement = getElementByTagNameNS(run, "t");
       if (textElement) {
-        let runText = textElement.textContent || "";
+        let runText = escapeHtml(textElement.textContent || "");
 
         if (textElement.getAttributeNS(WORD_NS, "space") === "preserve") {
           runText = " " + runText + " ";
@@ -2090,6 +2130,13 @@ const processHyperlink = (hyperlink: Element, relationships: any): string => {
     if (!href && linkText.trim()) {
       href = "#";
     }
+
+    // Untrusted target: allow only http(s)/mailto/tel/#anchor. Anything
+    // else (javascript:, data:, relative file paths) drops the link but
+    // keeps the visible text.
+    const safeHref = sanitizeHref(href);
+    if (!safeHref) return linkText;
+    href = escapeHtml(safeHref);
 
     if (linkText.trim()) {
       const linkStyles = [
@@ -2193,7 +2240,7 @@ const processDrawing = async (
     // lookup uses the unique media path and dodges the collision.
     // Only fall back to images[rId] / broad pattern matching when
     // the caller's relationships map didn't resolve.
-    if (relationships[imageId]) {
+    if (typeof relationships[imageId] === "string") {
       const target = relationships[imageId];
 
       const possiblePaths = [
@@ -2216,24 +2263,9 @@ const processDrawing = async (
       imageData = images[imageId];
     }
 
-    if (!imageData) {
-      const searchPatterns = [
-        imageId,
-        `rId${imageId.replace("rId", "")}`,
-        imageId.toLowerCase(),
-        `media/image${imageId.replace("rId", "")}`,
-      ];
-
-      for (const pattern of searchPatterns) {
-        const matchingKey = Object.keys(images).find(
-          (key) => key.includes(pattern) || key.endsWith(pattern),
-        );
-        if (matchingKey) {
-          imageData = images[matchingKey];
-          break;
-        }
-      }
-    }
+    // No fuzzy fallback: substring matching ("rId1" ⊂ "rId10",
+    // "media/image1" ⊂ "media/image10.png") picked the wrong picture.
+    // An unresolvable reference renders nothing rather than a wrong image.
 
     if (!imageData) {
       return null;
@@ -2362,9 +2394,13 @@ const processDrawing = async (
         hlinkClick.getAttributeNS(RELATIONSHIP_NS, "id") ||
         hlinkClick.getAttribute("r:id");
       const tgtFrame = hlinkClick.getAttribute("tgtFrame") || "";
-      if (linkRId && relationships[linkRId]) {
+      const safeUrl =
+        linkRId && typeof relationships[linkRId] === "string"
+          ? sanitizeHref(relationships[linkRId])
+          : null;
+      if (safeUrl) {
         link = {
-          url: relationships[linkRId],
+          url: safeUrl,
           openInNewTab: tgtFrame === "_blank" || tgtFrame === "",
         };
       }
@@ -2438,9 +2474,8 @@ const processDrawing = async (
             MAIN_NS,
             "srgbClr",
           )[0];
-          const color = srgbClr
-            ? `#${srgbClr.getAttribute("val") || "000000"}`
-            : "#000000";
+          const color =
+            hexColor(srgbClr?.getAttribute("val")) || "#000000";
           const prstDash = ln
             .getElementsByTagNameNS(MAIN_NS, "prstDash")[0]
             ?.getAttribute("val");
@@ -2599,8 +2634,8 @@ const getParagraphBordersAndShading = (pPr: Element | null): string[] => {
   const shd = getElementByTagNameNS(pPr, "shd");
   if (shd) {
     const fill = shd.getAttributeNS(WORD_NS, "fill");
-    if (fill && fill !== "auto" && fill !== "000000") {
-      styles.push(`background-color: #${fill}`);
+    if (hexColor(fill) && fill !== "000000") {
+      styles.push(`background-color: ${hexColor(fill)}`);
       styles.push(`padding: 8px 12px`);
     }
   }
@@ -2626,8 +2661,7 @@ const getParagraphBordersAndShading = (pPr: Element | null): string[] => {
         if (val && val !== "none" && val !== "nil") {
           hasBorder = true;
           const width = sz ? `${Math.max(1, parseInt(sz) / 8)}px` : "1px";
-          const borderColor =
-            color && color !== "auto" ? `#${color}` : "#000000";
+          const borderColor = hexColor(color) || "#000000";
           const borderStyle =
             val === "single" ? "solid" : val === "double" ? "double" : "solid";
 
@@ -2694,7 +2728,7 @@ const createTextBlock = (textContent: string, pPr: Element | null) => {
     ].join("; ");
 
     processedText = textContent.replace(
-      /^(\s*(?:<[^>]+>)*)(\S)/,
+      /^(\s*(?:<[^>]+>)*)(&#?\w+;|\S)/,
       `$1<span style="${dropCapStyle}">$2</span>`,
     );
   }
@@ -2956,7 +2990,7 @@ const processParagraph = async (
             if (rChild.namespaceURI !== WORD_NS) continue;
             switch (rChild.localName) {
               case "t": {
-                let runText = rChild.textContent || "";
+                let runText = escapeHtml(rChild.textContent || "");
                 const xmlSpace =
                   rChild.getAttribute("xml:space") ||
                   rChild.getAttributeNS(
@@ -3013,7 +3047,9 @@ const processParagraph = async (
                   try {
                     const codePoint = parseInt(symChar, 16);
                     if (Number.isFinite(codePoint)) {
-                      text += wrapWithStyles(String.fromCodePoint(codePoint));
+                      text += wrapWithStyles(
+                        escapeHtml(String.fromCodePoint(codePoint)),
+                      );
                     }
                   } catch (_) {
                     /* ignore */
@@ -3269,7 +3305,7 @@ const processParagraph = async (
             }
           }
         } else if (child.localName === "t") {
-          let runText = child.textContent || "";
+          let runText = escapeHtml(child.textContent || "");
           runText = processUnderscorePlaceholders(runText);
 
           if (child.getAttributeNS(WORD_NS, "space") === "preserve") {
@@ -3569,7 +3605,8 @@ const getAlignmentFromPPr = (pPr: Element | null): string => {
     end: "right",
   };
 
-  return alignmentMap[val?.toLowerCase() || ""] || "left";
+  const key = val?.toLowerCase() || "";
+  return hasOwn(alignmentMap, key) ? alignmentMap[key] : "left";
 };
 
 /**
@@ -3754,8 +3791,9 @@ const processTable = async (
       ? tblStyle.getAttributeNS(WORD_NS, "val")
       : "";
 
-    const tableStyleConfig =
-      TABLE_STYLES[tblStyleVal] || TABLE_STYLES["TableNormal"];
+    const tableStyleConfig = hasOwn(TABLE_STYLES, tblStyleVal)
+      ? TABLE_STYLES[tblStyleVal]
+      : TABLE_STYLES["TableNormal"];
     const conditionalFormatting = getTableConditionalFormatting(tblLook);
 
     if (tableStyleConfig.firstRow) {
@@ -4109,7 +4147,13 @@ const processTable = async (
             const jc = getElementByTagNameNS(pPr, "jc");
             if (jc) {
               const alignment = jc.getAttributeNS(WORD_NS, "val");
-              if (alignment && !cellStyleObj.textAlign) {
+              if (
+                alignment &&
+                !cellStyleObj.textAlign &&
+                ["left", "right", "center", "both", "justify"].includes(
+                  alignment,
+                )
+              ) {
                 cellStyleObj.textAlign =
                   alignment === "both" ? "justify" : alignment;
               }
@@ -4244,7 +4288,7 @@ const processCellContent = async (
           }
 
           if (textElement) {
-            let runText = textElement.textContent || "";
+            let runText = escapeHtml(textElement.textContent || "");
 
             if (!runText.trim()) {
               runText = "&nbsp;";
@@ -4307,7 +4351,9 @@ const processCellContent = async (
     }
 
     if (!cellContent.trim() && cell.textContent?.trim()) {
-      cellContent = processUnderscorePlaceholders(cell.textContent);
+      cellContent = processUnderscorePlaceholders(
+        escapeHtml(cell.textContent),
+      );
     }
 
     return cellContent.trim() ? cellContent : "&nbsp;";
@@ -4418,26 +4464,26 @@ const getTextStyles = (rPr: Element | null): string[] => {
 
   const color = getElementByTagNameNS(rPr, "color");
   if (color) {
-    const val = color.getAttributeNS(WORD_NS, "val");
-    if (val && val !== "auto") {
-      styles.push(`color: #${val}`);
+    const val = hexColor(color.getAttributeNS(WORD_NS, "val"));
+    if (val) {
+      styles.push(`color: ${val}`);
     }
   }
 
   const highlight = getElementByTagNameNS(rPr, "highlight");
   if (highlight) {
     const val = highlight.getAttributeNS(WORD_NS, "val");
-    if (val) {
-      const backgroundColor = getHighlightColor(val);
+    const backgroundColor = val ? getHighlightColor(val) : null;
+    if (backgroundColor) {
       styles.push(`background-color: ${backgroundColor}`);
     }
   }
 
   const shd = getElementByTagNameNS(rPr, "shd");
   if (shd) {
-    const fill = shd.getAttributeNS(WORD_NS, "fill");
-    if (fill && fill !== "auto") {
-      styles.push(`background-color: #${fill}`);
+    const fill = hexColor(shd.getAttributeNS(WORD_NS, "fill"));
+    if (fill) {
+      styles.push(`background-color: ${fill}`);
     }
   }
 
@@ -4489,8 +4535,10 @@ const getTextStyles = (rPr: Element | null): string[] => {
           underlineStyle = "underline";
       }
 
-      if (colorAttr && colorAttr !== "auto") {
-        styles.push(`text-decoration: ${underlineStyle} #${colorAttr}`);
+      if (hexColor(colorAttr)) {
+        styles.push(
+          `text-decoration: ${underlineStyle} ${hexColor(colorAttr)}`,
+        );
       } else {
         styles.push(`text-decoration: ${underlineStyle}`);
       }
@@ -4504,7 +4552,9 @@ const getCellBackgroundColor = (tcPr: Element | null): string | null => {
   if (tcPr) {
     const shd = getElementByTagNameNS(tcPr, "shd");
     if (shd) {
-      return shd.getAttributeNS(WORD_NS, "fill") || null;
+      // Bare hex (no "#"); null for "auto" / invalid values.
+      const fill = shd.getAttributeNS(WORD_NS, "fill");
+      return fill && HEX6_RE.test(fill) ? fill : null;
     }
   }
   return null;
@@ -4514,7 +4564,8 @@ const getCellTextColor = (tcPr: Element | null): string | null => {
   if (tcPr) {
     const color = getElementByTagNameNS(tcPr, "color");
     if (color) {
-      return color.getAttributeNS(WORD_NS, "val") || null;
+      const val = color.getAttributeNS(WORD_NS, "val");
+      return val && HEX6_RE.test(val) ? val : null;
     }
   }
   return null;
@@ -4532,9 +4583,9 @@ const getRowStyles = (
   // Row background color
   const shd = getElementByTagNameNS(trPr, "shd");
   if (shd) {
-    const fill = shd.getAttributeNS(WORD_NS, "fill");
-    if (fill && fill !== "auto") {
-      styles.push(`background-color: #${fill}`);
+    const fill = hexColor(shd.getAttributeNS(WORD_NS, "fill"));
+    if (fill) {
+      styles.push(`background-color: ${fill}`);
     }
   }
   if (conditionalFormatting.firstRow && rowIndex === 0) {
@@ -4559,7 +4610,7 @@ const getDetailedBorders = (borders: Element): string[] => {
         const width = size
           ? `${Math.max(1, Number.parseInt(size) / 8)}px`
           : "1px";
-        const borderColor = color && color !== "auto" ? `#${color}` : "#000000";
+        const borderColor = hexColor(color) || "#000000";
         styles.push(`border-${side}: ${width} solid ${borderColor}`);
       }
     }
@@ -4821,7 +4872,7 @@ const getParagraphStyles = (pPr: Element | null) => {
   return styles;
 };
 
-const getHighlightColor = (color: string): string => {
+const getHighlightColor = (color: string): string | null => {
   const colorMap: { [key: string]: string } = {
     yellow: "#FFFF00",
     green: "#00FF00",
@@ -4839,7 +4890,9 @@ const getHighlightColor = (color: string): string => {
     lightGray: "#C0C0C0",
     black: "#000000",
   };
-  return colorMap[color] || color;
+  // Only named highlight values map to a colour; "none" and anything
+  // unrecognised (untrusted input) yield no background.
+  return hasOwn(colorMap, color) ? colorMap[color] : null;
 };
 
 const mapThemeFont = (themeFont: string): string => {
@@ -4990,7 +5043,9 @@ const resolveSchemeColor = (
     accent5: "5B9BD5",
     accent6: "70AD47",
   };
-  const baseHex = SCHEME_MAP[schemeVal] ?? "808080";
+  const baseHex = hasOwn(SCHEME_MAP, schemeVal)
+    ? SCHEME_MAP[schemeVal]
+    : "808080";
   const r = parseInt(baseHex.slice(0, 2), 16) / 255;
   const g = parseInt(baseHex.slice(2, 4), 16) / 255;
   const b = parseInt(baseHex.slice(4, 6), 16) / 255;
@@ -5055,8 +5110,7 @@ const getAnchorFillColor = (anchor: Element): string | null => {
   const sf = solidFills[0];
   const srgb = sf.getElementsByTagNameNS(MAIN_NS, "srgbClr")[0];
   if (srgb) {
-    const val = srgb.getAttribute("val");
-    return val ? `#${val}` : null;
+    return hexColor(srgb.getAttribute("val"));
   }
   const scheme = sf.getElementsByTagNameNS(MAIN_NS, "schemeClr")[0];
   if (scheme) {
@@ -5472,9 +5526,9 @@ const getCellStyles = (
   // Cell background color
   const shd = getElementByTagNameNS(tcPr, "shd");
   if (shd) {
-    const fill = shd.getAttributeNS(WORD_NS, "fill");
-    if (fill && fill !== "auto") {
-      styles.push(`background-color: #${fill}`);
+    const fill = hexColor(shd.getAttributeNS(WORD_NS, "fill"));
+    if (fill) {
+      styles.push(`background-color: ${fill}`);
     }
   }
 
@@ -5666,231 +5720,310 @@ const extractDefaultLayout = (
 // parseDocxWithJSZip but returns the new ParsedDocx shape (pages +
 // headerBlocks + footerBlocks + defaultLayout).
 
+/** Largest .docx file accepted for import (compressed size). */
+export const MAX_DOCX_BYTES = 25 * 1024 * 1024;
+/** Upper bound on the summed uncompressed size of all zip entries. */
+const MAX_DOCX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024;
+
+const INVALID_DOCX_MESSAGE = "This file is not a valid .docx";
+
+const isXmlParseError = (doc: Document): boolean =>
+  doc.getElementsByTagName("parsererror").length > 0;
+
+/**
+ * Resolve a relationship Target against the directory that owns the
+ * `.rels` file (`word/_rels/document.xml.rels` → `word/`). Absolute
+ * targets ("/word/media/x.png") are package-root relative.
+ */
+const resolveRelTarget = (baseDir: string, target: string): string => {
+  const raw = target.startsWith("/") ? target.slice(1) : baseDir + target;
+  const out: string[] = [];
+  for (const seg of raw.split("/")) {
+    if (seg === "..") out.pop();
+    else if (seg && seg !== ".") out.push(seg);
+  }
+  return out.join("/");
+};
+
+/**
+ * Every package part referenced by an internal relationship in any
+ * `.rels` file. Used to load only the media the document actually
+ * uses instead of base64-encoding every file under word/media.
+ */
+const collectReferencedParts = async (zip: JSZip): Promise<Set<string>> => {
+  const referenced = new Set<string>();
+  for (const relsPath of Object.keys(zip.files)) {
+    if (!relsPath.endsWith(".rels")) continue;
+    const xml = await zip.file(relsPath)?.async("text");
+    if (!xml) continue;
+    const doc = new DOMParser().parseFromString(xml, "text/xml");
+    if (isXmlParseError(doc)) continue;
+    // "word/_rels/document.xml.rels" → "word/"
+    const baseDir = relsPath.replace(/_rels\/[^/]*$/, "");
+    for (const rel of Array.from(doc.getElementsByTagName("Relationship"))) {
+      if (rel.getAttribute("TargetMode") === "External") continue;
+      const target = rel.getAttribute("Target");
+      if (!target) continue;
+      referenced.add(resolveRelTarget(baseDir, target));
+      try {
+        referenced.add(resolveRelTarget(baseDir, decodeURIComponent(target)));
+      } catch {
+        /* malformed percent-encoding — raw form already added */
+      }
+    }
+  }
+  return referenced;
+};
+
 const parseDocxCore = async (buffer: ArrayBuffer): Promise<ParsedDocx> => {
-  const empty: ParsedDocx = {
-    pages: [{ blocks: [{ type: "paragraph", data: { text: "" } }] }],
-    headerBlocks: [],
-    footerBlocks: [],
-  };
-  try {
-    const zip = await JSZip.loadAsync(buffer);
-    const documentXml = await zip.file("word/document.xml")?.async("text");
-    const relsXml = await zip
-      .file("word/_rels/document.xml.rels")
-      ?.async("text");
-    if (!documentXml) {
-      console.error("[DocxImporter] Could not read word/document.xml");
-      return empty;
-    }
-
-    const relationships: any = {};
-    if (relsXml) {
-      const relsDoc = new DOMParser().parseFromString(relsXml, "text/xml");
-      const rels = relsDoc.getElementsByTagName("Relationship");
-      for (const rel of Array.from(rels)) {
-        const id = rel.getAttribute("Id");
-        const target = rel.getAttribute("Target");
-        if (id && target) relationships[id] = target;
-      }
-    }
-
-    const parser = new DOMParser();
-    const xmlDoc = parser.parseFromString(documentXml, "text/xml");
-    const body = xmlDoc.getElementsByTagNameNS(WORD_NS, "body")[0];
-    if (!body) {
-      console.error("[DocxImporter] No body found in document.xml");
-      return empty;
-    }
-
-    // Load every image under word/media/** and word/images/** as a base64
-    // data URL, keyed by both the absolute path and the leading-slash-
-    // stripped relative path so processDrawing can find it either way.
-    const images: { [key: string]: string } = {};
-    for (const [path, file] of Object.entries(zip.files)) {
-      if (
-        path.startsWith("word/media/") ||
-        path.startsWith("word/images/") ||
-        path.includes("media/image") ||
-        /word\/media\/image\d+\.\w+/.test(path)
-      ) {
-        try {
-          const imageData = await (file as any).async("base64");
-          const imageType = path.split(".").pop()?.toLowerCase() || "";
-          const mimeType = getMimeType(imageType);
-          if (mimeType) {
-            images[path] = `data:${mimeType};base64,${imageData}`;
-            const relPath = path.replace("word/", "");
-            images[relPath] = `data:${mimeType};base64,${imageData}`;
-          }
-        } catch (error) {
-          console.error(`[DocxImporter] Error loading image ${path}:`, error);
-        }
-      }
-    }
-
-    const { headerBlocks, footerBlocks } = await parseHeadersAndFooters(
-      zip,
-      images,
+  if (buffer.byteLength > MAX_DOCX_BYTES) {
+    throw new Error(
+      `This file is too large to import (max ${MAX_DOCX_BYTES / (1024 * 1024)} MB).`,
     );
+  }
 
-    const defaultLayout = extractDefaultLayout(body);
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(buffer);
+  } catch {
+    throw new Error(INVALID_DOCX_MESSAGE);
+  }
 
-    const pages: ParsedDocxPage[] = [];
-    let currentPageBlocks: any[] = [];
-    // Per-section-break layout override. Each `w:sectPr` on a paragraph's
-    // pPr defines the layout from THAT point forward until the next
-    // sectPr; apply it when flushing the page that contains the break.
-    let pendingLayoutOverride: ParsedDocxPage["layout"] | undefined;
+  // Zip-bomb guard: JSZip inflates lazily, so check the declared
+  // uncompressed sizes from the central directory before reading any
+  // entry. (Declared sizes can lie; the compressed-size cap above
+  // bounds the worst case for honest deflate ratios.)
+  let totalUncompressed = 0;
+  for (const entry of Object.values(zip.files)) {
+    if (entry.dir) continue;
+    totalUncompressed += (entry as any)._data?.uncompressedSize ?? 0;
+  }
+  if (totalUncompressed > MAX_DOCX_UNCOMPRESSED_BYTES) {
+    throw new Error(
+      "This file expands to more than 200 MB and can't be imported.",
+    );
+  }
 
-    const flushPage = (layoutOverride?: ParsedDocxPage["layout"]) => {
-      if (currentPageBlocks.length === 0) return;
-      const merged = mergeTightParagraphs(currentPageBlocks);
-      const processed = processLists(merged);
-      pages.push({
-        blocks: processed,
-        layout: layoutOverride || pendingLayoutOverride || defaultLayout,
-      });
-      currentPageBlocks = [];
-      pendingLayoutOverride = undefined;
+  const documentXml = await zip.file("word/document.xml")?.async("text");
+  const relsXml = await zip
+    .file("word/_rels/document.xml.rels")
+    ?.async("text");
+  if (!documentXml) {
+    throw new Error(INVALID_DOCX_MESSAGE);
+  }
+
+  const relationships: any = Object.create(null);
+  if (relsXml) {
+    const relsDoc = new DOMParser().parseFromString(relsXml, "text/xml");
+    const rels = relsDoc.getElementsByTagName("Relationship");
+    for (const rel of Array.from(rels)) {
+      const id = rel.getAttribute("Id");
+      const target = rel.getAttribute("Target");
+      if (id && target) relationships[id] = target;
+    }
+  }
+
+  const parser = new DOMParser();
+  const xmlDoc = parser.parseFromString(documentXml, "text/xml");
+  if (isXmlParseError(xmlDoc)) {
+    throw new Error(INVALID_DOCX_MESSAGE);
+  }
+  const body = xmlDoc.getElementsByTagNameNS(WORD_NS, "body")[0];
+  if (!body) {
+    throw new Error("No document body found");
+  }
+
+  // Load images under word/media/** and word/images/** as base64 data
+  // URLs, keyed by both the absolute path and the leading-slash-
+  // stripped relative path so processDrawing can find it either way.
+  // Only parts referenced by some relationship are loaded — unused
+  // media is never inflated.
+  const referencedParts = await collectReferencedParts(zip);
+  const images: { [key: string]: string } = Object.create(null);
+  for (const [path, file] of Object.entries(zip.files)) {
+    if (!referencedParts.has(path)) continue;
+    if (
+      path.startsWith("word/media/") ||
+      path.startsWith("word/images/") ||
+      path.includes("media/image") ||
+      /word\/media\/image\d+\.\w+/.test(path)
+    ) {
+      try {
+        const imageType = path.split(".").pop()?.toLowerCase() || "";
+        const mimeType = getMimeType(imageType);
+        if (mimeType) {
+          const imageData = await (file as any).async("base64");
+          // One string shared by both keys (no duplicate copy).
+          const dataUrl = `data:${mimeType};base64,${imageData}`;
+          images[path] = dataUrl;
+          const relPath = path.replace("word/", "");
+          images[relPath] = dataUrl;
+        }
+      } catch (error) {
+        console.error(`[DocxImporter] Error loading image ${path}:`, error);
+      }
+    }
+  }
+
+  const { headerBlocks, footerBlocks } = await parseHeadersAndFooters(
+    zip,
+    images,
+  );
+
+  const defaultLayout = extractDefaultLayout(body);
+
+  const pages: ParsedDocxPage[] = [];
+  let currentPageBlocks: any[] = [];
+  // Per-section-break layout override. Each `w:sectPr` on a paragraph's
+  // pPr defines the layout from THAT point forward until the next
+  // sectPr; apply it when flushing the page that contains the break.
+  let pendingLayoutOverride: ParsedDocxPage["layout"] | undefined;
+
+  const flushPage = (layoutOverride?: ParsedDocxPage["layout"]) => {
+    if (currentPageBlocks.length === 0) return;
+    const merged = mergeTightParagraphs(currentPageBlocks);
+    const processed = processLists(merged);
+    pages.push({
+      blocks: processed,
+      layout: layoutOverride || pendingLayoutOverride || defaultLayout,
+    });
+    currentPageBlocks = [];
+    pendingLayoutOverride = undefined;
+  };
+
+  // Detect floating-layout document (every piece of content lives in
+  // wp:anchor shapes with no direct body-level text). These need the
+  // dedicated grouping pass to come out with a sane column layout.
+  let usedFloatingLayout = false;
+  const bodyAnchorCount = body.getElementsByTagNameNS(
+    DRAWING_NS,
+    "anchor",
+  ).length;
+  if (bodyAnchorCount >= 2) {
+    const directBodyText = Array.from(
+      body.getElementsByTagNameNS(WORD_NS, "r"),
+    )
+      .filter((r) => !r.getElementsByTagNameNS(WORD_NS, "drawing").length)
+      .map(
+        (r) =>
+          r.getElementsByTagNameNS(WORD_NS, "t")[0]?.textContent ?? "",
+      )
+      .join("")
+      .trim();
+    if (!directBodyText) {
+      const layoutBlocks = await processFloatingDocumentLayout(
+        body,
+        relationships,
+        images,
+      );
+      if (layoutBlocks?.length) {
+        currentPageBlocks.push(...layoutBlocks);
+        usedFloatingLayout = true;
+      }
+    }
+  }
+
+  if (!usedFloatingLayout) {
+    // Mirror the source's mixed-container iteration — expand
+    // mc:AlternateContent + non-TOC w:sdt wrappers so their child
+    // paragraphs / tables land in the work list in document order.
+    const MC_NS =
+      "http://schemas.openxmlformats.org/markup-compatibility/2006";
+
+    const expandChild = (el: Element): Element[] => {
+      if (el.namespaceURI === MC_NS && el.localName === "AlternateContent") {
+        const choice = el.getElementsByTagNameNS(MC_NS, "Choice")[0];
+        const fallback = el.getElementsByTagNameNS(MC_NS, "Fallback")[0];
+        const source = choice || fallback;
+        if (!source) return [];
+        const out: Element[] = [];
+        for (const c of Array.from(source.children))
+          out.push(...expandChild(c));
+        return out;
+      }
+      if (
+        el.namespaceURI === WORD_NS &&
+        el.localName === "sdt" &&
+        !isTOCSdt(el)
+      ) {
+        const content = getElementByTagNameNS(el, "sdtContent");
+        if (!content) return [];
+        const out: Element[] = [];
+        for (const c of Array.from(content.children))
+          out.push(...expandChild(c));
+        return out;
+      }
+      return [el];
     };
 
-    // Detect floating-layout document (every piece of content lives in
-    // wp:anchor shapes with no direct body-level text). These need the
-    // dedicated grouping pass to come out with a sane column layout.
-    let usedFloatingLayout = false;
-    const bodyAnchorCount = body.getElementsByTagNameNS(
-      DRAWING_NS,
-      "anchor",
-    ).length;
-    if (bodyAnchorCount >= 2) {
-      const directBodyText = Array.from(
-        body.getElementsByTagNameNS(WORD_NS, "r"),
-      )
-        .filter((r) => !r.getElementsByTagNameNS(WORD_NS, "drawing").length)
-        .map(
-          (r) =>
-            r.getElementsByTagNameNS(WORD_NS, "t")[0]?.textContent ?? "",
-        )
-        .join("")
-        .trim();
-      if (!directBodyText) {
-        const layoutBlocks = await processFloatingDocumentLayout(
-          body,
-          relationships,
-          images,
-        );
-        if (layoutBlocks?.length) {
-          currentPageBlocks.push(...layoutBlocks);
-          usedFloatingLayout = true;
-        }
-      }
+    const workList: Element[] = [];
+    for (const child of Array.from(body.children)) {
+      workList.push(...expandChild(child));
     }
 
-    if (!usedFloatingLayout) {
-      // Mirror the source's mixed-container iteration — expand
-      // mc:AlternateContent + non-TOC w:sdt wrappers so their child
-      // paragraphs / tables land in the work list in document order.
-      const MC_NS =
-        "http://schemas.openxmlformats.org/markup-compatibility/2006";
+    for (const child of workList) {
+      if (child.namespaceURI !== WORD_NS) continue;
 
-      const expandChild = (el: Element): Element[] => {
-        if (el.namespaceURI === MC_NS && el.localName === "AlternateContent") {
-          const choice = el.getElementsByTagNameNS(MC_NS, "Choice")[0];
-          const fallback = el.getElementsByTagNameNS(MC_NS, "Fallback")[0];
-          const source = choice || fallback;
-          if (!source) return [];
-          const out: Element[] = [];
-          for (const c of Array.from(source.children))
-            out.push(...expandChild(c));
-          return out;
-        }
-        if (
-          el.namespaceURI === WORD_NS &&
-          el.localName === "sdt" &&
-          !isTOCSdt(el)
-        ) {
-          const content = getElementByTagNameNS(el, "sdtContent");
-          if (!content) return [];
-          const out: Element[] = [];
-          for (const c of Array.from(content.children))
-            out.push(...expandChild(c));
-          return out;
-        }
-        return [el];
-      };
-
-      const workList: Element[] = [];
-      for (const child of Array.from(body.children)) {
-        workList.push(...expandChild(child));
+      if (child.localName === "sdt") {
+        const tocBlocks = await processTOC(child, relationships, images);
+        for (const block of tocBlocks) currentPageBlocks.push(block);
+        continue;
       }
 
-      for (const child of workList) {
-        if (child.namespaceURI !== WORD_NS) continue;
-
-        if (child.localName === "sdt") {
-          const tocBlocks = await processTOC(child, relationships, images);
-          for (const block of tocBlocks) currentPageBlocks.push(block);
-          continue;
+      if (child.localName === "tbl") {
+        const block = await processTable(child, relationships, images);
+        if (Array.isArray(block)) {
+          for (const b of block) if (b) currentPageBlocks.push(b);
+        } else if (block) {
+          currentPageBlocks.push(block);
         }
+        continue;
+      }
 
-        if (child.localName === "tbl") {
-          const block = await processTable(child, relationships, images);
-          if (Array.isArray(block)) {
-            for (const b of block) if (b) currentPageBlocks.push(b);
-          } else if (block) {
-            currentPageBlocks.push(block);
+      if (child.localName !== "p") continue;
+
+      // flushPage() runs AFTER processParagraph so the paragraph's
+      // visible content lands on the current page before we split.
+      // `continue`-ing before processParagraph would silently delete
+      // text on any paragraph carrying both a page break and runs.
+      const carriesBreak = isPageBreak(child);
+      // Capture inline section layout — a sectPr on a paragraph's pPr
+      // changes the layout for the NEW page that starts after this break.
+      let sectionOverride: ParsedDocxPage["layout"] | undefined;
+      const pPr = getElementByTagNameNS(child, "pPr");
+      const sectPr = pPr ? getElementByTagNameNS(pPr, "sectPr") : null;
+      if (sectPr) sectionOverride = extractSectionLayout(sectPr);
+
+      const block = await processParagraph(child, relationships, images);
+      if (block) {
+        if (Array.isArray(block)) {
+          for (const singleBlock of block) {
+            if (singleBlock) currentPageBlocks.push(singleBlock);
           }
-          continue;
-        }
-
-        if (child.localName !== "p") continue;
-
-        // flushPage() runs AFTER processParagraph so the paragraph's
-        // visible content lands on the current page before we split.
-        // `continue`-ing before processParagraph would silently delete
-        // text on any paragraph carrying both a page break and runs.
-        const carriesBreak = isPageBreak(child);
-        // Capture inline section layout — a sectPr on a paragraph's pPr
-        // changes the layout for the NEW page that starts after this break.
-        let sectionOverride: ParsedDocxPage["layout"] | undefined;
-        const pPr = getElementByTagNameNS(child, "pPr");
-        const sectPr = pPr ? getElementByTagNameNS(pPr, "sectPr") : null;
-        if (sectPr) sectionOverride = extractSectionLayout(sectPr);
-
-        const block = await processParagraph(child, relationships, images);
-        if (block) {
-          if (Array.isArray(block)) {
-            for (const singleBlock of block) {
-              if (singleBlock) currentPageBlocks.push(singleBlock);
-            }
-          } else {
-            currentPageBlocks.push(block);
-          }
-        }
-        if (carriesBreak) {
-          flushPage();
-          if (sectionOverride) pendingLayoutOverride = sectionOverride;
+        } else {
+          currentPageBlocks.push(block);
         }
       }
+      if (carriesBreak) {
+        flushPage();
+        if (sectionOverride) pendingLayoutOverride = sectionOverride;
+      }
     }
-
-    // Trailing content without a terminating page break still forms a page.
-    if (currentPageBlocks.length > 0) {
-      flushPage();
-    }
-
-    if (pages.length === 0) {
-      pages.push({
-        blocks: [{ type: "paragraph", data: { text: "" } }],
-        layout: defaultLayout,
-      });
-    }
-
-    return { pages, headerBlocks, footerBlocks, defaultLayout };
-  } catch (error) {
-    console.error("[DocxImporter] Error parsing DOCX:", error);
-    return empty;
   }
+
+  // Trailing content without a terminating page break still forms a page.
+  if (currentPageBlocks.length > 0) {
+    flushPage();
+  }
+
+  if (pages.length === 0) {
+    pages.push({
+      blocks: [{ type: "paragraph", data: { text: "" } }],
+      layout: defaultLayout,
+    });
+  }
+
+  return { pages, headerBlocks, footerBlocks, defaultLayout };
 };
 
 // ─── Public API ──────────────────────────────────────────────────────────
@@ -5903,8 +6036,18 @@ const parseDocxCore = async (buffer: ArrayBuffer): Promise<ParsedDocx> => {
 export async function parseDocx(
   input: File | ArrayBuffer,
 ): Promise<ParsedDocx> {
-  const arrayBuffer =
-    input instanceof ArrayBuffer ? input : await input.arrayBuffer();
+  // Reject oversized files before reading them into memory at all.
+  // Duck-type rather than `instanceof ArrayBuffer`, which fails for buffers
+  // created in another realm (iframes, workers, test environments).
+  const isBlob = typeof (input as Blob).arrayBuffer === "function";
+  if (isBlob && (input as Blob).size > MAX_DOCX_BYTES) {
+    throw new Error(
+      `This file is too large to import (max ${MAX_DOCX_BYTES / (1024 * 1024)} MB).`,
+    );
+  }
+  const arrayBuffer = isBlob
+    ? await (input as Blob).arrayBuffer()
+    : (input as ArrayBuffer);
   return parseDocxCore(arrayBuffer);
 }
 

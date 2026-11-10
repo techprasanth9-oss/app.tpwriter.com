@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import * as authApi from "~/lib/api/auth";
 import { ApiError } from "~/lib/api/client";
 
@@ -6,6 +7,7 @@ const ME_KEY = ["auth", "me"] as const;
 
 export function useAuth() {
   const qc = useQueryClient();
+  const navigate = useNavigate();
 
   const meQuery = useQuery({
     queryKey: ME_KEY,
@@ -49,6 +51,9 @@ export function useAuth() {
     onSuccess: () => {
       qc.setQueryData(ME_KEY, null);
       qc.removeQueries({ queryKey: ["documents"] });
+      // Otherwise the current screen stays up (a blank profile, or an
+      // editor autosaving into 401s).
+      void navigate({ to: "/login" });
     },
   });
 

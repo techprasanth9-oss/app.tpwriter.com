@@ -124,6 +124,20 @@ export function useAutosave({
     };
   }, [doSave]);
 
+  // Warn before closing the tab while edits are still waiting to be saved
+  // or a save is in flight. The unmount flush above can't run on unload.
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (timerRef.current === null && !inFlightRef.current) return;
+      void doSave();
+      e.preventDefault();
+      // Legacy browsers only show the prompt when returnValue is set.
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [doSave]);
+
   const saveNow = useCallback(async () => {
     if (timerRef.current !== null) {
       window.clearTimeout(timerRef.current);

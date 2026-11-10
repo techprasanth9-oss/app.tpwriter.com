@@ -7,6 +7,7 @@ import {
   type MutableRefObject,
 } from "react";
 import { configureBaseTools } from "../lib/editor";
+import { sanitizeEditorData } from "../lib/editor/sanitizeData";
 
 export interface EditorJSComponentProps {
   /** Initial content. Omit to start with an empty page. */
@@ -46,9 +47,13 @@ const PLACEHOLDER = "Start writing…";
  * EditorJS wrapper component for a single page.
  *
  * Lifecycle: mount → initialize → onReady → onChange (user edits) → destroy.
- * StrictMode double-mount is guarded via `mountedRef` + `initializingRef`
- * so a cleanup from the discarded first mount doesn't race with the second
- * mount's init.
+ * Each init takes a generation number; an init that resumes after a newer
+ * one started (StrictMode double-mount, pageIndex change) bails out, so two
+ * EditorJS instances never share one holder.
+ *
+ * `data` is applied on mount and whenever the parent passes a *different*
+ * object. Parents must keep passing the same object while the user edits,
+ * or the editor is reset to it.
  */
 export function EditorJSComponent({
   data,
@@ -67,7 +72,12 @@ export function EditorJSComponent({
   const heightObserverRef = useRef<ResizeObserver | null>(null);
   const [isEditorReady, setIsEditorReady] = useState(false);
   const mountedRef = useRef(false);
-  const initializingRef = useRef(false);
+  const initGenerationRef = useRef(0);
+  // The EditorJS instance is created once per pageIndex, so its callbacks
+  // must read props through this ref — closing over them would freeze the
+  // first render's handlers (and the parent's state they capture).
+  const propsRef = useRef({ data, onChange, onContentOverflow, onImageUpload });
+  propsRef.current = { data, onChange, onContentOverflow, onImageUpload };
   const lastDataRef = useRef<string>("");
   // True while we're programmatically replaying `data` into EditorJS via
   // clear() + render(). Without this guard, the parent's onChange fires
@@ -106,18 +116,18 @@ export function EditorJSComponent({
 
   const checkOverflow = useCallback(
     async (editor: EditorJS) => {
-      if (!onContentOverflow) return;
+      if (!propsRef.current.onContentOverflow) return;
       try {
         const saved = await editor.save();
         const measured = await measureContentHeight();
         if (measured > basePageHeight) {
-          onContentOverflow(saved, pageIndex);
+          propsRef.current.onContentOverflow?.(saved, pageIndex);
         }
       } catch (error) {
         console.warn("Error checking content overflow:", error);
       }
     },
-    [basePageHeight, measureContentHeight, onContentOverflow, pageIndex],
+    [basePageHeight, measureContentHeight, pageIndex],
   );
 
   const emitHeight = useCallback(async () => {
@@ -168,20 +178,27 @@ export function EditorJSComponent({
     }
 
     setIsEditorReady(false);
-    initializingRef.current = false;
   }, [editorRef, holderId]);
 
   const initializeEditor = useCallback(async () => {
-    if (initializingRef.current || !mountedRef.current) return;
-
-    initializingRef.current = true;
+    if (!mountedRef.current) return;
+    const generation = ++initGenerationRef.current;
+    const isStale = () =>
+      !mountedRef.current || generation !== initGenerationRef.current;
 
     try {
       await cleanupEditor();
       // Give the DOM a tick after cleanup before we re-create the editor,
       // otherwise EditorJS trips over its own disposed container.
       await new Promise((resolve) => setTimeout(resolve, 50));
-      if (!mountedRef.current) return;
+      if (isStale()) return;
+
+      const data = propsRef.current.data
+        ? sanitizeEditorData(propsRef.current.data)
+        : undefined;
+      const uploadImage = propsRef.current.onImageUpload
+        ? (file: File) => propsRef.current.onImageUpload!(file)
+        : undefined;
 
       const editorElement = containerRef.current?.querySelector(`#${holderId}`);
       if (editorElement) {
@@ -197,7 +214,7 @@ export function EditorJSComponent({
         placeholder: isFirstPage && !hasInitialBlocks ? PLACEHOLDER : undefined,
         autofocus: isFirstPage && !hasInitialBlocks,
         tools: {
-          ...configureBaseTools({ imageUploader: onImageUpload }),
+          ...configureBaseTools({ imageUploader: uploadImage }),
           ...(additionalTools ?? {}),
           // TODO: tighten this once configureBaseTools exports a typed tool map.
         } as never,
@@ -207,9 +224,9 @@ export function EditorJSComponent({
           version: "2.30.8",
         },
         onReady: () => {
-          if (!mountedRef.current) return;
+          if (isStale()) return;
           setIsEditorReady(true);
-          lastDataRef.current = JSON.stringify(data || {});
+          lastDataRef.current = JSON.stringify(propsRef.current.data || {});
 
           setTimeout(() => {
             if (mountedRef.current) {
@@ -225,21 +242,10 @@ export function EditorJSComponent({
           if (isExternalRenderRef.current) return;
 
           try {
+            // EditorJS keeps block ids stable on its own — no remapping.
             const content = await editor.save();
             if (!content) return;
-
-            // Preserve the stable block ids the parent assigned so a save
-            // round-trips with the same ids.
-            if (data && data.blocks) {
-              content.blocks = content.blocks.map((block, index) => {
-                const original = data.blocks[index];
-                if (original && original.id) {
-                  return { ...block, id: original.id };
-                }
-                return block;
-              });
-            }
-            onChange?.(content);
+            propsRef.current.onChange?.(content);
 
             setTimeout(() => {
               if (mountedRef.current) {
@@ -257,12 +263,10 @@ export function EditorJSComponent({
       editorRef.current = editor;
     } catch (error) {
       console.error("Error initializing editor:", error);
-    } finally {
-      initializingRef.current = false;
     }
-    // Intentionally only re-initialize when pageIndex changes. The data /
-    // tools / handlers are read fresh inside the init closure or updated
-    // via the external-render effect below.
+    // Intentionally only re-initialize when pageIndex changes. Props are
+    // read through propsRef; data changes go through the external-render
+    // effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pageIndex]);
 
@@ -289,7 +293,7 @@ export function EditorJSComponent({
             holder.style.minHeight = `${lockedHeight}px`;
           }
           await localEditorRef.current?.clear();
-          await localEditorRef.current?.render(data);
+          await localEditorRef.current?.render(sanitizeEditorData(data));
           lastDataRef.current = currentDataString;
 
           setTimeout(() => {

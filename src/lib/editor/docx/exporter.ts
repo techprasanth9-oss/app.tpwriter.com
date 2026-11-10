@@ -3,6 +3,7 @@
  */
 import {
   AlignmentType,
+  LevelFormat,
   Document,
   HeadingLevel,
   ImageRun,
@@ -31,6 +32,32 @@ export interface ExportOptions {
   title?: string;
 }
 
+/** Numbering reference used by ordered list paragraphs (see flattenList). */
+const ORDERED_LIST_REF = "zw-ordered";
+
+// docx only resolves a `numbering.reference` that is declared in the
+// Document's numbering config — an undeclared one leaves a literal
+// `{zw-ordered-0}` placeholder in w:numId and Word rejects the file.
+const ORDERED_LIST_FORMATS = [
+  LevelFormat.DECIMAL,
+  LevelFormat.LOWER_LETTER,
+  LevelFormat.LOWER_ROMAN,
+];
+const ORDERED_LIST_NUMBERING = {
+  reference: ORDERED_LIST_REF,
+  levels: Array.from({ length: 9 }, (_, level) => ({
+    level,
+    format: ORDERED_LIST_FORMATS[level % ORDERED_LIST_FORMATS.length]!,
+    text: `%${level + 1}.`,
+    alignment: AlignmentType.START,
+    style: {
+      paragraph: {
+        indent: { left: 720 * (level + 1), hanging: 360 },
+      },
+    },
+  })),
+};
+
 export async function exportDocx(
   data: EditorOutput,
   opts: ExportOptions = {},
@@ -48,6 +75,7 @@ export async function exportDocx(
   const doc = new Document({
     creator: "TP Writer",
     title: opts.title || "Untitled document",
+    numbering: { config: [ORDERED_LIST_NUMBERING] },
     sections: [{ properties: {}, children }],
   });
 
@@ -101,8 +129,12 @@ function blockToDocx(
       });
     }
     case "image": {
+      // ImageTool and the importer store `data.url`; `data.file.url` is
+      // the stock @editorjs/image shape — accept either.
       const file = block.data.file as { url?: string } | undefined;
-      const url = file?.url;
+      const url =
+        (typeof block.data.url === "string" ? block.data.url : undefined) ??
+        file?.url;
       if (!url) return null;
       return imageUrlToParagraph(url, String(block.data.caption ?? ""));
     }
@@ -150,7 +182,9 @@ function flattenList(
       new Paragraph({
         children: inlineHtmlToRuns(item.content ?? ""),
         bullet: ordered ? undefined : { level: depth },
-        numbering: ordered ? { reference: "zw-ordered", level: depth } : undefined,
+        numbering: ordered
+          ? { reference: ORDERED_LIST_REF, level: depth }
+          : undefined,
       }),
     );
     if (Array.isArray(item.items) && item.items.length > 0) {
@@ -172,13 +206,22 @@ function imageUrlToParagraph(url: string, caption: string): Paragraph {
       children: [new TextRun({ text: `[image: ${url}]`, italics: true })],
     });
   }
-  const match = url.match(/^data:(image\/[a-z+]+);base64,(.+)$/i);
+  const match = url.match(/^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i);
   if (!match) return new Paragraph({ children: [] });
   const [, mime, b64] = match;
+  const type = typeFromMime(mime!);
+  // Unsupported raster formats (webp, svg, tiff, emf…) would otherwise
+  // be mislabelled as JPEG and produce a broken picture in Word.
+  if (!type) {
+    return new Paragraph({
+      children: [
+        new TextRun({ text: `[unsupported image: ${mime}]`, italics: true }),
+      ],
+    });
+  }
   const bin = atob(b64!);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  const type = typeFromMime(mime!);
   return new Paragraph({
     children: [
       new ImageRun({
@@ -191,11 +234,22 @@ function imageUrlToParagraph(url: string, caption: string): Paragraph {
   });
 }
 
-function typeFromMime(mime: string): "png" | "jpg" | "gif" | "bmp" {
-  if (mime.includes("png")) return "png";
-  if (mime.includes("gif")) return "gif";
-  if (mime.includes("bmp")) return "bmp";
-  return "jpg";
+function typeFromMime(mime: string): "png" | "jpg" | "gif" | "bmp" | null {
+  switch (mime.toLowerCase()) {
+    case "image/png":
+      return "png";
+    case "image/jpeg":
+    case "image/jpg":
+    case "image/pjpeg":
+      return "jpg";
+    case "image/gif":
+      return "gif";
+    case "image/bmp":
+    case "image/x-ms-bmp":
+      return "bmp";
+    default:
+      return null;
+  }
 }
 
 function inlineHtmlToRuns(html: string): ParagraphChild[] {

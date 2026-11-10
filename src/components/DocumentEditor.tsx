@@ -2,7 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import type EditorJS from "@editorjs/editorjs";
 import type { OutputData } from "@editorjs/editorjs";
-import { exportDocx, importDocx, type EditorOutput } from "~/lib/editor";
+import {
+  exportDocx,
+  importDocx,
+  MAX_DOCX_BYTES,
+  type EditorOutput,
+} from "~/lib/editor";
+import { sanitizeEditorData } from "~/lib/editor/sanitizeData";
+import { uploadImage as uploadImageToApi } from "~/lib/api/uploads";
 import type {
   FullDocument,
   PageLayout,
@@ -24,12 +31,8 @@ import { PageCanvas, DEFAULT_LAYOUT } from "./PageCanvas";
 import { ThumbnailsSidebar } from "./ThumbnailsSidebar";
 
 async function uploadImage(file: File): Promise<{ url: string }> {
-  const form = new FormData();
-  form.append("file", file);
-  const res = await fetch("/api/uploads", { method: "POST", body: form, credentials: "include" });
-  if (!res.ok) throw new Error(`upload failed: ${res.status}`);
-  const data = (await res.json()) as { url: string };
-  return { url: data.url.startsWith("/uploads") ? `/api${data.url}` : data.url };
+  const { url } = await uploadImageToApi(file);
+  return { url };
 }
 
 function triggerDownload(blob: Blob, filename: string): void {
@@ -102,6 +105,10 @@ export function DocumentEditor({ documentId }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pageSlotRefs = useRef<Map<string, HTMLElement>>(new Map());
+  // Latest pages for callbacks that EditorJS instances hold onto.
+  const pagesRef = useRef<PageSlot[]>([]);
+  pagesRef.current = pages;
+  const appendInFlightRef = useRef(false);
 
   // Hydrate from the loaded doc once per documentId change.
   useEffect(() => {
@@ -117,6 +124,8 @@ export function DocumentEditor({ documentId }: Props) {
     pageSlotRefs.current.clear();
   }, [documentId]);
 
+  /** Initial load only: takes everything (title, layout, content) from the
+   *  server. */
   function hydrateFromDoc(doc: FullDocument) {
     setTitle(doc.title);
     setDefaultLayout(doc.defaultLayout);
@@ -128,6 +137,26 @@ export function DocumentEditor({ documentId }: Props) {
       })),
     );
     setActivePageIndex(0);
+  }
+
+  /** After a structural change (page added / deleted): take the server's
+   *  page list but keep every existing slot object as-is. Handing an open
+   *  editor the server's copy of its content would reset it to the last
+   *  autosave and drop whatever the user typed since. */
+  function syncPagesFromDoc(doc: FullDocument) {
+    setDefaultLayout(doc.defaultLayout);
+    setPages((prev) => {
+      const existing = new Map(prev.map((p) => [p.id, p]));
+      return doc.pages.map(
+        (p) =>
+          existing.get(p.id) ?? {
+            id: p.id,
+            initialData: p.content as OutputData,
+            layoutOverride: p.layoutOverride,
+          },
+      );
+    });
+    setActivePageIndex((i) => Math.min(i, Math.max(doc.pages.length - 1, 0)));
   }
 
   const getOrCreateHandle = useCallback((pageId: string): EditorHandle => {
@@ -166,16 +195,25 @@ export function DocumentEditor({ documentId }: Props) {
   // Only fires for the last page so middle-pages can grow freely.
   const handleOverflow = useCallback(
     async (overflowingPageId: string) => {
-      const idx = pages.findIndex((p) => p.id === overflowingPageId);
-      if (idx !== pages.length - 1) return;
+      // Read the latest pages: this runs from inside an EditorJS onChange
+      // that may have been created several renders ago.
+      const current = pagesRef.current;
+      const idx = current.findIndex((p) => p.id === overflowingPageId);
+      if (idx !== current.length - 1) return;
+      // Every keystroke while overflowing re-fires this; only one append
+      // may be in flight or we'd add a page per keystroke.
+      if (appendInFlightRef.current) return;
+      appendInFlightRef.current = true;
       try {
         const next = await appendPageMut.mutateAsync(documentId);
-        hydrateFromDoc(next);
+        syncPagesFromDoc(next);
       } catch (err) {
         console.error("[appendPage] failed:", err);
+      } finally {
+        appendInFlightRef.current = false;
       }
     },
-    [appendPageMut, documentId, pages],
+    [appendPageMut, documentId],
   );
 
   const handlePageFocus = useCallback(
@@ -190,7 +228,7 @@ export function DocumentEditor({ documentId }: Props) {
   const addPage = useCallback(async () => {
     try {
       const next = await appendPageMut.mutateAsync(documentId);
-      hydrateFromDoc(next);
+      syncPagesFromDoc(next);
     } catch (err) {
       console.error("[addPage] failed:", err);
     }
@@ -200,12 +238,14 @@ export function DocumentEditor({ documentId }: Props) {
     async (index: number) => {
       const page = pages[index];
       if (!page || pages.length <= 1) return;
-      editorHandlesRef.current.delete(page.id);
-      pageSlotRefs.current.delete(page.id);
       try {
         await deletePageMut.mutateAsync({ documentId, pageId: page.id });
+        // Only drop the editor handle once the server agreed — dropping it
+        // first means a failed delete leaves a page autosave no longer sees.
+        editorHandlesRef.current.delete(page.id);
+        pageSlotRefs.current.delete(page.id);
         const refreshed = await docQuery.refetch();
-        if (refreshed.data) hydrateFromDoc(refreshed.data);
+        if (refreshed.data) syncPagesFromDoc(refreshed.data);
       } catch (err) {
         console.error("[deletePage] failed:", err);
       }
@@ -289,20 +329,42 @@ export function DocumentEditor({ documentId }: Props) {
       e.target.value = "";
       if (!file) return;
 
+      if (file.size > MAX_DOCX_BYTES) {
+        alert(
+          `That file is too large to import (max ${Math.round(MAX_DOCX_BYTES / 1024 / 1024)} MB).`,
+        );
+        return;
+      }
+
       setBusy(true);
       try {
+        // Parse fully BEFORE touching the document: the importer throws on a
+        // bad file, and nothing is deleted unless we have content to show.
         const data = await importDocx(file);
+        if (!data?.blocks?.length) {
+          throw new Error("The file doesn't contain any content we can import.");
+        }
+        if (
+          !confirm(
+            `Replace the contents of "${title}" with "${file.name}"?\n\nAll ${pages.length} page(s) will be overwritten.`,
+          )
+        ) {
+          return;
+        }
+
         // Replace current page content with the imported document on page 1.
         // Delete all other pages first.
         for (let i = pages.length - 1; i > 0; i--) {
           const p = pages[i];
           if (p) {
             await deletePageMut.mutateAsync({ documentId, pageId: p.id });
+            editorHandlesRef.current.delete(p.id);
+            pageSlotRefs.current.delete(p.id);
           }
         }
         // Reload to get fresh state after deletes.
         const refreshed = await docQuery.refetch();
-        if (refreshed.data) hydrateFromDoc(refreshed.data);
+        if (refreshed.data) syncPagesFromDoc(refreshed.data);
 
         // Render the imported data into the (now sole) first editor.
         const first = pages[0] ?? refreshed.data?.pages[0];
@@ -311,7 +373,7 @@ export function DocumentEditor({ documentId }: Props) {
           const editor = handle?.current;
           if (editor) {
             await editor.isReady;
-            await editor.render(data as never);
+            await editor.render(sanitizeEditorData(data) as never);
             bumpPreviews();
           }
         }
@@ -324,7 +386,7 @@ export function DocumentEditor({ documentId }: Props) {
         setBusy(false);
       }
     },
-    [bumpPreviews, deletePageMut, docQuery, documentId, pages],
+    [bumpPreviews, deletePageMut, docQuery, documentId, pages, title],
   );
 
   const handleExportClick = useCallback(async () => {
@@ -353,47 +415,52 @@ export function DocumentEditor({ documentId }: Props) {
 
   const handleLayoutApply = useCallback(
     async (scope: "default" | "page", nextLayout: PageLayout) => {
-      if (scope === "default") {
-        // Document-wide default — every page inherits unless overridden.
-        const updated = await updateDocMut.mutateAsync({
-          id: documentId,
-          patch: { defaultLayout: nextLayout },
-        });
-        hydrateFromDoc(updated);
-        return;
+      try {
+        await applyLayout(scope, nextLayout);
+      } catch (err) {
+        console.error("[layout] failed:", err);
+        alert("Couldn't update the page layout. Please try again.");
       }
-      // Per-page override: store only the keys that differ from the default
-      // so the inherited "pure" relationship stays clean. If the override
-      // matches the default exactly, we clear it to null.
-      const active = pages[activePageIndex];
-      if (!active) return;
-      const editor = editorHandlesRef.current.get(active.id)?.current;
-      const content =
-        editor && (await editor.save().catch(() => ({ blocks: [] })));
-      const diff = diffAgainst(defaultLayout, nextLayout);
-      await upsertPageMut.mutateAsync({
-        documentId,
-        pageId: active.id,
-        content: (content ?? { blocks: [] }) as EditorOutput,
-        layoutOverride: diff,
-      });
-      // Reflect the override locally without a full refetch to avoid
-      // thrashing every page's editor.
-      setPages((prev) =>
-        prev.map((p, i) =>
-          i === activePageIndex ? { ...p, layoutOverride: diff } : p,
-        ),
-      );
     },
-    [
-      activePageIndex,
-      defaultLayout,
-      documentId,
-      pages,
-      updateDocMut,
-      upsertPageMut,
-    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activePageIndex, defaultLayout, documentId, pages, updateDocMut, upsertPageMut],
   );
+
+  async function applyLayout(scope: "default" | "page", nextLayout: PageLayout) {
+    if (scope === "default") {
+      // Document-wide default — every page inherits unless overridden.
+      const updated = await updateDocMut.mutateAsync({
+        id: documentId,
+        patch: { defaultLayout: nextLayout },
+      });
+      setDefaultLayout(updated.defaultLayout);
+      return;
+    }
+    // Per-page override: store only the keys that differ from the default
+    // so the inherited "pure" relationship stays clean. If the override
+    // matches the default exactly, we clear it to null.
+    const active = pages[activePageIndex];
+    if (!active) return;
+    // The PUT replaces the page's content too, so we need the live content.
+    // Never fall back to an empty page — that would erase it on the server.
+    const editor = editorHandlesRef.current.get(active.id)?.current;
+    if (!editor) throw new Error("Page editor is not ready yet.");
+    const content = await editor.save();
+    const diff = diffAgainst(defaultLayout, nextLayout);
+    await upsertPageMut.mutateAsync({
+      documentId,
+      pageId: active.id,
+      content: content as EditorOutput,
+      layoutOverride: diff,
+    });
+    // Reflect the override locally without a full refetch to avoid
+    // thrashing every page's editor.
+    setPages((prev) =>
+      prev.map((p, i) =>
+        i === activePageIndex ? { ...p, layoutOverride: diff } : p,
+      ),
+    );
+  }
 
   if (docQuery.isLoading) {
     return <div className="doc-full-loading">Loading document…</div>;
