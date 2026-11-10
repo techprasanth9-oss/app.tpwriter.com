@@ -8,7 +8,8 @@ import { uploadImage as uploadImageToApi } from "~/lib/api/uploads";
 import { useDocument } from "~/hooks/useDocuments";
 import { useAutosave } from "~/hooks/useAutosave";
 import { EditorCommands } from "~/lib/editor/commands";
-import type { DiffBlock } from "~/lib/editor/contentDiff";
+import { diffContent, isEmptyDiff, stateFromBlocks, type DiffBlock } from "~/lib/editor/contentDiff";
+import { deleteDraft, loadDraft, type Draft } from "~/lib/editor/drafts";
 import { EditorHistory } from "~/lib/editor/history";
 import { normalizeBlocks } from "~/lib/editor/normalize";
 import { PAGE_GAP, pageSize } from "~/lib/editor/pagination/paper";
@@ -100,6 +101,7 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
   const [pages, setPages] = useState<PageSummary[]>([]);
   const [activePage, setActivePage] = useState(0);
   const [commands, setCommands] = useState<EditorCommands | null>(null);
+  const [draft, setDraft] = useState<Draft | null>(null);
 
   const editorRef = useRef<EditorJS | null>(null);
   const historyRef = useRef<EditorHistory | null>(null);
@@ -153,6 +155,45 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
     },
     [commands],
   );
+
+  // ── Unsaved local draft (crash / closed tab while offline) ───────────
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadDraft(documentId).then((found) => {
+      if (cancelled || !found) return;
+      // Only offer it if it actually differs from what the server has.
+      if (isEmptyDiff(diffContent(stateFromBlocks(doc.blocks as DiffBlock[]), found.blocks))) {
+        void deleteDraft(documentId);
+        return;
+      }
+      setDraft(found);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [documentId, doc.blocks]);
+
+  const restoreDraft = useCallback(async () => {
+    const editor = editorRef.current;
+    if (!draft || !editor) return;
+    await editor.render({
+      time: draft.savedAt,
+      blocks: sanitizeEditorData(normalizeBlocks(draft.blocks as EditorBlock[])),
+    });
+    await historyRef.current?.reset();
+    setDraft(null);
+    // The autosave baseline is still the server copy, so this saves exactly
+    // the recovered differences.
+    autosave.markDirty();
+  }, [autosave, draft]);
+
+  const discardDraft = useCallback(async () => {
+    // Wait for the delete: navigating away aborts an unfinished IndexedDB
+    // transaction, and the draft would be offered again next time.
+    await deleteDraft(documentId);
+    setDraft(null);
+  }, [documentId]);
 
   // ── Title (metadata, saved separately from content) ──────────────────
 
@@ -324,6 +365,22 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
           </button>
           <button type="button" className="doc-btn" onClick={() => void handleKeepMine()}>
             Keep my version
+          </button>
+        </div>
+      )}
+
+      {draft && autosave.status !== "conflict" && (
+        <div className="doc-conflict" role="alert">
+          <span>
+            {draft.baseRevision === doc.revision
+              ? `You have unsaved changes from ${new Date(draft.savedAt).toLocaleString()} that didn't reach the server.`
+              : `You have unsaved changes from ${new Date(draft.savedAt).toLocaleString()}, but the document has changed since. Restoring replaces the newer version.`}
+          </span>
+          <button type="button" className="doc-btn" onClick={() => void restoreDraft()} disabled={!commands}>
+            Restore my changes
+          </button>
+          <button type="button" className="doc-btn" onClick={() => void discardDraft()}>
+            Discard
           </button>
         </div>
       )}

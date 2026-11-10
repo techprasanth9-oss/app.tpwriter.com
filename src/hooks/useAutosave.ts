@@ -9,6 +9,7 @@ import {
   type DiffBlock,
   type SavedState,
 } from "~/lib/editor/contentDiff";
+import { deleteDraft, saveDraft } from "~/lib/editor/drafts";
 
 export type AutosaveStatus =
   | "idle"
@@ -49,6 +50,10 @@ const MAX_RETRY_MS = 60_000;
  * changed since the last successful save (plus the order when it changed),
  * guarded by the document revision so two tabs can't silently overwrite
  * each other.
+ *
+ * Before each attempt the full content is also written to a local draft
+ * (IndexedDB); it's deleted once the server has everything, so a crash or
+ * a closed tab while offline doesn't lose work.
  */
 export function useAutosave({
   documentId,
@@ -95,9 +100,16 @@ export function useAutosave({
       const diff = diffContent(savedRef.current, blocks);
       if (isEmptyDiff(diff)) {
         setStatus((s) => (s === "pending" || s === "saving" ? "saved" : s));
+        if (!dirtyRef.current) await deleteDraft(documentId);
         return;
       }
       setStatus("saving");
+      await saveDraft({
+        documentId,
+        baseRevision: revisionRef.current,
+        blocks,
+        savedAt: Date.now(),
+      });
       const res = await docsApi.saveContent(documentId, {
         baseRevision: revisionRef.current,
         ...diff,
@@ -105,8 +117,12 @@ export function useAutosave({
       savedRef.current = applyDiff(savedRef.current, diff);
       revisionRef.current = res.revision;
       retryDelayRef.current = MIN_RETRY_MS;
+      // Edits made during the request will write a fresh draft next round.
+      if (!dirtyRef.current) await deleteDraft(documentId);
       setError(null);
-      setStatus("saved");
+      // Edits that arrived during the request are still queued — don't
+      // claim "Saved" until they're in too.
+      setStatus(dirtyRef.current ? "pending" : "saved");
       setLastSavedAt(new Date());
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {

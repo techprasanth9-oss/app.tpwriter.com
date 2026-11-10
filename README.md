@@ -22,3 +22,16 @@ pnpm dev
 
 - Web:  http://localhost:3000
 - API:  http://localhost:3001/health
+
+## Tests
+
+- `pnpm test` — unit tests (Vitest + jsdom).
+- `pnpm test:e2e` — browser tests (Playwright) against the real API on a
+  throwaway in-memory MongoDB. Needs a checkout of `tp-writer-api`:
+
+  ```bash
+  TP_API_DIR=../../Backend/tp-writer-api pnpm test:e2e
+  ```
+
+  Locally it uses your installed Chrome. In CI the E2E workflow needs an
+  `API_REPO_TOKEN` secret with read access to the API repo.

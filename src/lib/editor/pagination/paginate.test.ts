@@ -7,7 +7,7 @@ const geo = { pageHeight: 1000, marginTop: 100, marginBottom: 100, gap: 20 };
 describe("paginate", () => {
   it("keeps everything on one page when it fits", () => {
     const r = paginate([{ height: 400 }, { height: 400 }], geo);
-    expect(r).toEqual({ pushes: [0, 0], pageOf: [0, 0], pageCount: 1 });
+    expect(r).toEqual({ pushes: [0, 0], splits: [[], []], pageOf: [0, 0], pageCount: 1 });
   });
 
   it("pushes a block that doesn't fit to the top of the next page", () => {
@@ -40,4 +40,51 @@ describe("paginate", () => {
   it("an empty document is one page", () => {
     expect(paginate([], geo).pageCount).toBe(1);
   });
+
+  // A 20-line paragraph, 20px per line → breaks every 20px.
+  const lines = (n: number, lineHeight = 20) =>
+    Array.from({ length: n - 1 }, (_, i) => (i + 1) * lineHeight);
+
+  it("splits a paragraph across a page boundary at a line break", () => {
+    // Writing starts at y=100; after 700px, 100px are left → 5 lines fit.
+    const r = paginate([{ height: 700 }, { height: 400, getBreaks: () => lines(20), keepTogether: 2 }], geo);
+    expect(r.pushes).toEqual([0, 0]);
+    expect(r.pageOf).toEqual([0, 0]);
+    expect(r.splits[1]).toEqual([{ at: 100, index: 4, gap: 1120 - 900 }]);
+    expect(r.pageCount).toBe(2);
+  });
+
+  it("splits a block across several pages", () => {
+    const r = paginate([{ height: 2000, getBreaks: () => lines(100) }], geo);
+    expect(r.splits[0]!.map((s) => s.at)).toEqual([800, 1600]);
+    expect(r.pageCount).toBe(3);
+  });
+
+  it("moves the whole paragraph when fewer than keepTogether lines fit (orphan control)", () => {
+    // 20px left → one line would fit, but two are required.
+    const r = paginate([{ height: 780 }, { height: 100, getBreaks: () => lines(5), keepTogether: 2 }], geo);
+    expect(r.splits[1]).toEqual([]);
+    expect(r.pageOf).toEqual([0, 1]);
+    expect(r.pushes[1]).toBe(1120 - 880);
+  });
+
+  it("keeps two lines on the next page too (widow control)", () => {
+    // 5 lines, 80px left: 4 lines would fit but would leave 1 alone.
+    const r = paginate([{ height: 720 }, { height: 100, getBreaks: () => lines(5), keepTogether: 2 }], geo);
+    expect(r.splits[1]).toEqual([{ at: 60, index: 2, gap: 1120 - 880 }]);
+  });
+
+  it("only measures breaks for blocks that don't fit", () => {
+    let calls = 0;
+    paginate([{ height: 100, getBreaks: () => (calls++, lines(5)) }], geo);
+    expect(calls).toBe(0);
+  });
+
+  it("splits a table between rows", () => {
+    // rows of 60px; 500px left → 8 rows fit.
+    const rows = Array.from({ length: 14 }, (_, i) => (i + 1) * 60);
+    const r = paginate([{ height: 300 }, { height: 900, getBreaks: () => rows }], geo);
+    expect(r.splits[1]).toEqual([{ at: 480, index: 7, gap: 1120 - 880 }]);
+  });
 });
+

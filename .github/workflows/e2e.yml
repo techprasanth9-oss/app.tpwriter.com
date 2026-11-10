@@ -1,0 +1,66 @@
+name: E2E
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # The API lives in its own (private) repo. Reading it needs a token
+      # with read access stored as the API_REPO_TOKEN secret; without it
+      # this job is skipped rather than failing.
+      - name: Check for API repo access
+        id: access
+        env:
+          TOKEN: ${{ secrets.API_REPO_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; else
+            echo "::notice::API_REPO_TOKEN is not set; skipping browser e2e tests."
+            echo "ok=false" >> "$GITHUB_OUTPUT"; fi
+
+      - if: steps.access.outputs.ok == 'true'
+        uses: actions/checkout@v4
+        with:
+          path: app
+
+      - if: steps.access.outputs.ok == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: techprasanth9-oss/api.tpwriter.com
+          token: ${{ secrets.API_REPO_TOKEN }}
+          path: api
+
+      - if: steps.access.outputs.ok == 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+
+      - if: steps.access.outputs.ok == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - if: steps.access.outputs.ok == 'true'
+        name: Install
+        run: |
+          pnpm --dir api install --frozen-lockfile
+          pnpm --dir app install --frozen-lockfile
+          pnpm --dir app exec playwright install --with-deps chromium
+
+      - if: steps.access.outputs.ok == 'true'
+        name: Run e2e
+        working-directory: app
+        env:
+          CI: "true"
+          TP_API_DIR: ${{ github.workspace }}/api
+        run: pnpm test:e2e
+
+      - if: failure() && steps.access.outputs.ok == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: app/test-results
+          retention-days: 7

@@ -125,6 +125,9 @@ export const DocumentSurface = forwardRef<DocumentSurfaceHandle, Props>(
       return () => {
         cancelled = true;
         editorRef.current = null;
+        // Hide it now — destroy() waits for init to finish, and until then
+        // a discarded instance (StrictMode) would render a second copy.
+        mount.style.display = "none";
         // destroy() throws if called before EditorJS finished initialising.
         editor.isReady
           .then(() => editor.destroy())

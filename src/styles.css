@@ -1756,6 +1756,23 @@ body {
   display: flow-root;
 }
 
+/* Split floats: a zero-width strut down to the break, then a full-width
+   gap that pushes the following lines onto the next sheet. */
+.tp-flow .tp-split {
+  float: left;
+  clear: left;
+  width: 100%;
+  pointer-events: none;
+  user-select: none;
+}
+.tp-flow .tp-split--strut {
+  width: 0;
+}
+
+/* While the paginator measures, its own effects must not count. */
+.tp-measuring .tp-split { display: none !important; }
+.tp-measuring tr { top: 0 !important; }
+
 /* Direct paragraph spacing replaces the named style's margin. */
 .tp-format.tp-has-space-before > * { margin-top: 0 !important; }
 .tp-format.tp-has-space-after > * { margin-bottom: 0 !important; }

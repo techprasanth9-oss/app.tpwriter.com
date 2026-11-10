@@ -16,3 +16,6 @@ dist
 .vite
 coverage
 data/
+test-results
+playwright-report
+e2e/.auth
