@@ -1,0 +1,224 @@
+/*
+ * Chart block + its data-grid dialog. The SVG scales with the column
+ * width at a fixed aspect ratio, so the block's height is deterministic.
+ */
+.tp-chart {
+  position: relative;
+  margin: 0.5em 0;
+}
+
+.tp-chart__figure {
+  aspect-ratio: 600 / 320;
+}
+
+.tp-chart__svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.tp-chart__bar,
+.tp-chart__slice,
+.tp-chart__point {
+  transition: opacity 120ms;
+}
+
+.tp-chart__marks:hover .tp-chart__bar,
+.tp-chart__marks:hover .tp-chart__slice {
+  opacity: 0.75;
+}
+
+.tp-chart__marks .tp-chart__bar:hover,
+.tp-chart__marks .tp-chart__slice:hover {
+  opacity: 1;
+}
+
+.tp-chart__edit {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  padding: 2px 8px;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+  background: #fff;
+  color: #1f2328;
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms;
+}
+
+.tp-chart:hover .tp-chart__edit,
+.tp-chart__edit:focus-visible {
+  opacity: 1;
+}
+
+@media print {
+  .tp-chart__edit {
+    display: none;
+  }
+}
+
+/* ── Dialog ─────────────────────────────────────────────────────────── */
+
+.tp-chart-dialog__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(31, 35, 40, 0.45);
+}
+
+.tp-chart-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(760px, 100%);
+  max-height: calc(100vh - 32px);
+  padding: 18px 20px;
+  border-radius: 8px;
+  background: #fff;
+  color: #1f2328;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+}
+
+.tp-chart-dialog__heading {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.tp-chart-dialog__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.tp-chart-dialog__field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: #57606a;
+  font-weight: 600;
+}
+
+.tp-chart-dialog__title {
+  min-width: min(360px, 70vw);
+}
+
+.tp-chart-dialog input,
+.tp-chart-dialog select {
+  box-sizing: border-box;
+  padding: 4px 6px;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+  background: #fff;
+  color: #1f2328;
+  font: inherit;
+  font-weight: 400;
+}
+
+.tp-chart-dialog input:focus-visible,
+.tp-chart-dialog select:focus-visible,
+.tp-chart-dialog button:focus-visible {
+  outline: 2px solid #0969da;
+  outline-offset: 1px;
+}
+
+.tp-chart-dialog__tools {
+  display: flex;
+  gap: 8px;
+}
+
+.tp-chart-dialog button {
+  padding: 4px 10px;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+  background: #f6f8fa;
+  color: #1f2328;
+  font: inherit;
+  cursor: pointer;
+}
+
+.tp-chart-dialog button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.tp-chart-dialog__grid-wrap {
+  overflow: auto;
+  min-height: 120px;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+}
+
+.tp-chart-dialog__grid {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.tp-chart-dialog__grid th,
+.tp-chart-dialog__grid td {
+  padding: 3px 4px;
+  border-bottom: 1px solid #eaeef2;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.tp-chart-dialog__grid thead th {
+  position: sticky;
+  top: 0;
+  background: #f6f8fa;
+  z-index: 1;
+}
+
+.tp-chart-dialog__grid input {
+  width: 100%;
+  min-width: 80px;
+}
+
+.tp-chart-dialog__value {
+  text-align: right;
+}
+
+.tp-chart-dialog__swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 4px;
+  border-radius: 2px;
+  vertical-align: middle;
+}
+
+.tp-chart-dialog__grid th input {
+  width: calc(100% - 44px);
+}
+
+.tp-chart-dialog__remove-series,
+.tp-chart-dialog__remove-row {
+  padding: 0 6px !important;
+  margin-left: 2px;
+  line-height: 1.4;
+}
+
+.tp-chart-dialog__status {
+  margin: 0;
+  color: #57606a;
+}
+
+.tp-chart-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.tp-chart-dialog .tp-chart-dialog__save {
+  border-color: #1f883d;
+  background: #1f883d;
+  color: #fff;
+  font-weight: 600;
+}

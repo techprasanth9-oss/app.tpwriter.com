@@ -37,7 +37,8 @@ export async function reloadDocument(page: Page): Promise<void> {
 
 async function editorReady(page: Page): Promise<void> {
   // Dev StrictMode mounts the editor twice; wait for the discarded one to go.
-  await expect(page.locator(".codex-editor")).toHaveCount(1);
+  // (Column blocks contain nested editors; count only top-level ones.)
+  await expect(page.locator(".codex-editor:not(.custom-columns-tool .codex-editor)")).toHaveCount(1);
   await page.locator(".ce-block").first().waitFor();
   await settle(page);
 }

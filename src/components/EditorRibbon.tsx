@@ -329,6 +329,12 @@ export function EditorRibbon(props: Props) {
             <RibbonGroup label="Tables & media">
               <RibbonButton label="Table" wide onClick={run((c) => c.insertBlock("table"))} disabled={off}>▦</RibbonButton>
               <RibbonButton label="Image" wide onClick={run((c) => c.insertBlock("image"))} disabled={off}>🖼</RibbonButton>
+              <RibbonButton label="Chart" wide onClick={run((c) => c.insertBlock("chart"))} disabled={off}>📊</RibbonButton>
+            </RibbonGroup>
+            <RibbonGroup label="Text & symbols">
+              <RibbonButton label="Text box" wide onClick={run((c) => c.insertBlock("textBox"))} disabled={off}>▢</RibbonButton>
+              <RibbonButton label="Equation" wide onClick={run((c) => c.insertBlock("equation"))} disabled={off}>∑</RibbonButton>
+              <RibbonButton label="Columns" wide onClick={run((c) => c.insertBlock("column"))} disabled={off}>▥</RibbonButton>
             </RibbonGroup>
             <RibbonGroup label="Links">
               <RibbonButton label={`Link (${MOD}K)`} wide active={inline.link !== null} onClick={props.onOpenLink} disabled={off}>🔗</RibbonButton>

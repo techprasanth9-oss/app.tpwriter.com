@@ -143,5 +143,26 @@ describe("paginate", () => {
       expect(reserved.pageOf).toEqual([0, 1]);
     });
   });
+
+  describe("objects", () => {
+    it("reserves repeated table header rows on continuation pages", () => {
+      const rows = Array.from({ length: 32 }, (_, i) => (i + 1) * 40);
+      const r = paginate([{ height: 300 }, { height: 1320, getBreaks: () => rows, repeatHeight: 40 }], geo);
+      // Table starts at y=400: first piece ends at a row boundary ≤ 900 → at=480.
+      expect(r.splits[1]![0]).toEqual({ at: 480, index: 11, gap: 1120 + 40 - 880 });
+      // The second piece has 800 − 40 px of room: 760 → 19 rows.
+      expect(r.splits[1]![1]!.at).toBe(480 + 760);
+    });
+
+    it("floated blocks take no flow space but move when they don't fit", () => {
+      const r = paginate([{ height: 600 }, { height: 999, floatHeight: 250 }, { height: 100 }], geo);
+      expect(r.pageOf).toEqual([0, 1, 1]);
+      expect(r.pushes[1]).toBe(1120 - 700);
+      // The following block starts beside the float, at the same y.
+      expect(r.pushes[2]).toBe(0);
+      const fits = paginate([{ height: 100 }, { height: 999, floatHeight: 250 }, { height: 100 }], geo);
+      expect(fits.pageOf).toEqual([0, 0, 0]);
+    });
+  });
 });
 

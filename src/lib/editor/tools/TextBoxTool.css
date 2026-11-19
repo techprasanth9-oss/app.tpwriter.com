@@ -1,0 +1,67 @@
+/*
+ * Text box / callout. Preset colours mirror TEXT_BOX_COLORS in
+ * objectData.ts (also used by the DOCX export) — keep them in sync.
+ */
+.tp-textbox {
+  box-sizing: border-box;
+  margin: 0.5em 0;
+  padding: 0.6em 0.85em;
+  border: 1.5px solid #d4a72c;
+  border-left-width: 4px;
+  border-radius: 4px;
+  background: #fff8c5;
+}
+
+.tp-textbox--align-left {
+  margin-left: 0;
+  margin-right: auto;
+}
+
+.tp-textbox--align-center {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.tp-textbox--align-right {
+  margin-left: auto;
+  margin-right: 0;
+}
+
+.tp-textbox--note {
+  background: #fff8c5;
+  border-color: #d4a72c;
+}
+
+.tp-textbox--info {
+  background: #ddf4ff;
+  border-color: #54aeff;
+}
+
+.tp-textbox--warning {
+  background: #ffebe9;
+  border-color: #cf222e;
+}
+
+.tp-textbox--plain {
+  background: #ffffff;
+  border-color: #8c959f;
+}
+
+.tp-textbox__content {
+  outline: none;
+  min-height: 1.4em;
+  overflow-wrap: anywhere;
+}
+
+.tp-textbox__content:empty::before {
+  content: attr(data-placeholder);
+  color: #6e7781;
+  pointer-events: none;
+}
+
+@media print {
+  .tp-textbox {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

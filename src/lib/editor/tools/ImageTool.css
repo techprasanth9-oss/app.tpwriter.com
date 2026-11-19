@@ -1,0 +1,137 @@
+/* ImageTool chrome. Layout of wrapped images (floating the .ce-block for
+   .tp-image--float-left / --float-right) lives in the editor stylesheet,
+   not here — the tool only tags its root. */
+
+.tp-image {
+  position: relative;
+}
+
+.tp-image .image-container {
+  max-width: 100%;
+  box-sizing: content-box;
+}
+
+.tp-image__status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 72px;
+  padding: 16px;
+  border: 1.5px dashed #d0d5dd;
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #475467;
+  font-size: 13px;
+}
+
+.tp-image__status--overlay {
+  position: absolute;
+  inset: 0;
+  min-height: 0;
+  border: none;
+  border-radius: 0;
+  background: rgba(255, 255, 255, 0.72);
+  z-index: 12;
+}
+
+.tp-image__spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #c7d7fe;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: tp-image-spin 0.8s linear infinite;
+}
+
+@keyframes tp-image-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tp-image__spinner {
+    animation: none;
+  }
+}
+
+.tp-image__msg {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 6px auto 0;
+  max-width: 480px;
+  padding: 6px 8px 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+}
+
+.tp-image__msg--warning {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  color: #92400e;
+}
+
+.tp-image__msg--error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+}
+
+.tp-image__msg > span {
+  flex: 1;
+}
+
+.tp-image__msg-close {
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 4px;
+  opacity: 0.7;
+}
+
+.tp-image__msg-close:hover {
+  opacity: 1;
+}
+
+.tp-image [data-image-dropzone]:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.tp-image .tp-image__drop--over {
+  border-color: #2563eb !important;
+  background-color: #eff6ff !important;
+}
+
+/* Print / export: no editing chrome. */
+@media print {
+  .tp-image__msg,
+  .tp-image__status,
+  .tp-image .custom-image-tool__resize-handle {
+    display: none !important;
+  }
+}
+
+/* Resize handles only while the image is hovered, focused or selected
+   (they were always visible). */
+.custom-image-tool__resize-handle {
+  opacity: 0;
+  pointer-events: none;
+}
+.ce-block:hover .custom-image-tool__resize-handle,
+.ce-block--focused .custom-image-tool__resize-handle,
+.ce-block--selected .custom-image-tool__resize-handle,
+.image-container:focus-within .custom-image-tool__resize-handle {
+  opacity: 1;
+  pointer-events: auto;
+}
+@media print {
+  .custom-image-tool__resize-handle { display: none !important; }
+}

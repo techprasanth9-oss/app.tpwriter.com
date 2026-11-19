@@ -37,8 +37,8 @@ interface Result {
   schedule: () => void;
 }
 
-const BLOCK_SELECTOR = ".codex-editor__redactor > .ce-block";
 const SPLIT_CLASS = "tp-split";
+const GHOST_CLASS = "tp-table-ghost";
 const MEASURING_CLASS = "tp-measuring";
 /** Generated content inside blocks (TOC entries, footnote numbers). */
 const GENERATED = "[data-tp-generated], .tp-fn-ref";
@@ -108,7 +108,11 @@ export function usePagination(surfaceRef: RefObject<HTMLElement | null>, options
       observedRef.current = redactor;
     }
 
-    const blocks = Array.from(surface.querySelectorAll<HTMLElement>(BLOCK_SELECTOR));
+    // Only the main editor's blocks — nested editors (columns) have their
+    // own `.ce-block`s, which belong to their parent block.
+    const blocks = redactor
+      ? (Array.from(redactor.children).filter((c) => c.classList.contains("ce-block")) as HTMLElement[])
+      : [];
     const kinds = blocks.map(splitKind);
 
     // ── Sections (from section-break blocks, in order) ───────────────────
@@ -153,9 +157,18 @@ export function usePagination(surfaceRef: RefObject<HTMLElement | null>, options
     pushStyle.media = "not all";
     const scale = surface.offsetWidth ? surface.getBoundingClientRect().width / surface.offsetWidth : 1;
     const breaksCache = new Map<number, number[]>();
+    const tableInfo = new Map<HTMLElement, TableInfo>();
     const metrics: BlockMetrics[] = blocks.map((el, i) => {
       const kind = kinds[i]!;
       const rect = el.getBoundingClientRect();
+      // Floated images (text wrap) sit beside the following blocks.
+      if (getComputedStyle(el).float !== "none") {
+        return { height: 0, floatHeight: rect.height / (scale || 1), sectionStart: sectionStart[i] };
+      }
+      if (kind === "rows") {
+        const info = measureTable(el, scale || 1);
+        if (info) tableInfo.set(el, info);
+      }
       const footnotes = Array.from(el.querySelectorAll<HTMLElement>(".tp-fn-ref[data-fn-id]")).map((ref) => ({
         id: ref.dataset.fnId!,
         at: (ref.getBoundingClientRect().top - rect.top) / (scale || 1),
@@ -167,12 +180,16 @@ export function usePagination(surfaceRef: RefObject<HTMLElement | null>, options
         breakBefore: i > 0 && isPageBreak(blocks[i - 1]!),
         sectionStart: sectionStart[i],
         keepTogether: kind === "lines" ? 2 : 1,
-        getBreaks: kind
-          ? () => {
-              if (!breaksCache.has(i)) breaksCache.set(i, measureBreaks(el, kind, scale || 1));
-              return breaksCache.get(i)!;
-            }
-          : undefined,
+        getBreaks:
+          kind === "rows"
+            ? () => tableInfo.get(el)?.breaks ?? []
+            : kind
+              ? () => {
+                  if (!breaksCache.has(i)) breaksCache.set(i, measureBreaks(el, kind, scale || 1));
+                  return breaksCache.get(i)!;
+                }
+              : undefined,
+        repeatHeight: tableInfo.get(el)?.repeatHeight || undefined,
         footnotes: footnotes.length > 0 ? footnotes : undefined,
       };
     });
@@ -218,11 +235,13 @@ export function usePagination(surfaceRef: RefObject<HTMLElement | null>, options
       if (sel && push > 0) rules.push(`${sel}{margin-top:${round(push)}px}`);
 
       syncFloats(el, kinds[i] === "lines" ? splits : []);
-      if (kinds[i] === "rows" && splits.length > 0) {
-        shiftRows(el, splits, shifted);
+      const info = tableInfo.get(el);
+      if (kinds[i] === "rows" && splits.length > 0 && info) {
+        shiftRows(info, splits, shifted);
         const total = splits.reduce((sum, s) => sum + s.gap, 0);
         if (sel) rules.push(`${sel}{padding-bottom:${round(total)}px}`);
       }
+      syncGhostHeaders(el, kinds[i] === "rows" && info ? info : null, splits, scale || 1);
     });
     for (const row of shiftedRowsRef.current) {
       if (!shifted.has(row)) {
@@ -260,7 +279,13 @@ export function usePagination(surfaceRef: RefObject<HTMLElement | null>, options
       const last = first + (result.splits[i]?.length ?? 0);
       const headingEl = el.querySelector<HTMLElement>(".ce-header");
       const heading = headingEl?.textContent?.trim();
-      const text = el.querySelector(".ce-paragraph, .cdx-list, table")?.textContent?.trim();
+      const textEl = el.querySelector(".ce-paragraph, .cdx-list, table");
+      // Tables: join cells with spaces (textContent runs them together).
+      const text = (
+        textEl?.tagName === "TABLE"
+          ? Array.from((textEl as HTMLTableElement).rows, (r) => Array.from(r.cells, (c) => c.textContent?.trim()).join(" · ")).join(" / ")
+          : textEl?.textContent
+      )?.trim();
       if (heading && el.dataset.id) {
         outline.push({ blockId: el.dataset.id, text: heading, level: Number(headingEl!.dataset.level) || 1, page: first + 1 });
       }
@@ -355,6 +380,8 @@ function sectionBreakLayout(block: HTMLElement): Partial<PageLayout> | null {
 }
 
 function splitKind(block: HTMLElement): SplitKind | null {
+  // Side-by-side columns are flex items: they can't be split by floats.
+  if (block.querySelector(".custom-columns-tool")) return null;
   if (block.querySelector(".ce-paragraph, .cdx-list")) return "lines";
   if (block.querySelector("table")) return "rows";
   return null;
@@ -370,14 +397,6 @@ const round = (n: number) => Math.round(n * 100) / 100;
 function measureBreaks(block: HTMLElement, kind: SplitKind, scale: number): number[] {
   const blockTop = block.getBoundingClientRect().top;
   const toLocal = (y: number) => (y - blockTop) / scale;
-
-  if (kind === "rows") {
-    const table = block.querySelector("table");
-    if (!table) return [];
-    return Array.from(table.rows)
-      .slice(1)
-      .map((row) => toLocal(row.getBoundingClientRect().top));
-  }
 
   const content = block.querySelector(".ce-block__content") ?? block;
   const rects: Array<{ top: number; bottom: number }> = [];
@@ -451,19 +470,51 @@ function syncFloats(block: HTMLElement, splits: Split[]): void {
   }
 }
 
-/** Offset table rows after each break so they start on the next page. */
-function shiftRows(block: HTMLElement, splits: Split[], shifted: Set<HTMLTableRowElement>): void {
+interface TableInfo {
+  table: HTMLTableElement;
+  rows: HTMLTableRowElement[];
+  /** Natural row tops, px from the block top. */
+  rowTops: number[];
+  /** Allowed break offsets: row boundaries outside header rows and not
+   *  inside a vertically merged cell. */
+  breaks: number[];
+  /** Leading rows marked `data-repeat-header` and their total height. */
+  headerRows: HTMLTableRowElement[];
+  repeatHeight: number;
+}
+
+/** Measure a table block (in the measuring state: rows unshifted). */
+function measureTable(block: HTMLElement, scale: number): TableInfo | null {
   const table = block.querySelector("table");
-  if (!table) return;
+  if (!table) return null;
+  const blockTop = block.getBoundingClientRect().top;
   const rows = Array.from(table.rows);
-  let offset = 0;
-  let next = 0;
-  rows.forEach((row, r) => {
-    // Break i sits before row i + 1.
-    while (next < splits.length && splits[next]!.index + 1 <= r) {
-      offset += splits[next]!.gap;
-      next += 1;
-    }
+  const rowTops = rows.map((r) => (r.getBoundingClientRect().top - blockTop) / scale);
+
+  let headerCount = 0;
+  while (headerCount < rows.length && rows[headerCount]!.dataset.repeatHeader === "true") headerCount++;
+  const headerRows = rows.slice(0, headerCount);
+  const repeatHeight =
+    headerCount > 0
+      ? (rows[headerCount - 1]!.getBoundingClientRect().bottom - rows[0]!.getBoundingClientRect().top) / scale
+      : 0;
+
+  // reach[i] = last row index covered by any cell starting at or above i.
+  let reach = -1;
+  const breaks: number[] = [];
+  rows.forEach((row, i) => {
+    if (i > 0 && i > headerCount && reach < i) breaks.push(rowTops[i]!);
+    for (const cell of Array.from(row.cells)) reach = Math.max(reach, i + Math.max(1, cell.rowSpan) - 1);
+  });
+  return { table, rows, rowTops, breaks, headerRows, repeatHeight };
+}
+
+/** Offset table rows after each break so they start on the next page. */
+function shiftRows(info: TableInfo, splits: Split[], shifted: Set<HTMLTableRowElement>): void {
+  info.rows.forEach((row, r) => {
+    const naturalTop = info.rowTops[r]!;
+    let offset = 0;
+    for (const s of splits) if (naturalTop >= s.at - 0.5) offset += s.gap;
     if (offset === 0) return;
     const top = `${round(offset)}px`;
     if (row.style.position !== "relative") row.style.position = "relative";
@@ -472,12 +523,70 @@ function shiftRows(block: HTMLElement, splits: Split[], shifted: Set<HTMLTableRo
   });
 }
 
+/**
+ * Draw copies of a table's repeating header rows at the top of each
+ * continuation page (the paginator reserved the space). They're layout
+ * only: outside the tool's element, `data-mutation-free`, never saved.
+ */
+function syncGhostHeaders(block: HTMLElement, info: TableInfo | null, splits: Split[], scale: number): void {
+  const existing = Array.from(block.children).filter((c) => c.classList.contains(GHOST_CLASS)) as HTMLElement[];
+  if (!info || info.headerRows.length === 0 || splits.length === 0) {
+    existing.forEach((g) => g.remove());
+    return;
+  }
+  const blockRect = block.getBoundingClientRect();
+  const tableRect = info.table.getBoundingClientRect();
+  const left = (tableRect.left - blockRect.left) / scale;
+  const width = tableRect.width / scale;
+  let cumulative = 0;
+  const tops = splits.map((s) => {
+    cumulative += s.gap;
+    return s.at + cumulative - info.repeatHeight;
+  });
+  const signature = `${round(left)}:${round(width)}:${tops.map(round).join(",")}:${info.headerRows.map((r) => r.innerHTML.length).join(",")}`;
+  if (existing.length === tops.length && existing.every((g) => g.dataset.spec === signature)) return;
+  existing.forEach((g) => g.remove());
+
+  const cellWidths = info.headerRows.map((r) => Array.from(r.cells).map((c) => c.getBoundingClientRect().width / scale));
+  for (const top of tops) {
+    const ghost = document.createElement("div");
+    ghost.className = GHOST_CLASS;
+    ghost.dataset.mutationFree = "true";
+    ghost.dataset.spec = signature;
+    ghost.setAttribute("aria-hidden", "true");
+    ghost.contentEditable = "false";
+    ghost.style.cssText = `position:absolute;top:${round(top)}px;left:${round(left)}px;width:${round(width)}px;`;
+    const table = info.table.cloneNode(false) as HTMLTableElement;
+    table.style.width = `${round(width)}px`;
+    table.style.tableLayout = "fixed";
+    table.style.margin = "0";
+    const body = document.createElement("tbody");
+    info.headerRows.forEach((row, r) => {
+      const clone = row.cloneNode(true) as HTMLTableRowElement;
+      clone.removeAttribute("style");
+      // A copy, not a header row: nothing should find it as one.
+      clone.removeAttribute("data-repeat-header");
+      Array.from(clone.cells).forEach((cell, c) => {
+        cell.removeAttribute("contenteditable");
+        cell.querySelectorAll("[contenteditable]").forEach((n) => n.removeAttribute("contenteditable"));
+        cell.style.width = `${round(cellWidths[r]![c] ?? 0)}px`;
+      });
+      body.appendChild(clone);
+    });
+    table.appendChild(body);
+    ghost.appendChild(table);
+    block.appendChild(ghost);
+  }
+}
+
 function isOwnMutation(record: MutationRecord): boolean {
   const target = record.target instanceof Element ? record.target : record.target.parentElement;
   if (target?.closest(GENERATED)) return true;
   const nodes = [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)];
   return (
     nodes.length > 0 &&
-    nodes.every((n) => n instanceof HTMLElement && n.classList.contains(SPLIT_CLASS))
+    nodes.every(
+      (n) => n instanceof HTMLElement && (n.classList.contains(SPLIT_CLASS) || n.classList.contains(GHOST_CLASS)),
+    )
   );
 }

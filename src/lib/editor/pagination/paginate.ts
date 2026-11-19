@@ -51,6 +51,12 @@ export interface BlockMetrics {
   keepTogether?: number;
   /** Footnote references in the block: id and offset from the block top. */
   footnotes?: Array<{ id: string; at: number }>;
+  /** Table header rows repeated at the top of each continuation page —
+   *  their height is reserved there. */
+  repeatHeight?: number;
+  /** A floated block (image with text wrap): it takes no vertical space in
+   *  the flow, but must fit on its page; `height` is ignored. */
+  floatHeight?: number;
 }
 
 export interface Split {
@@ -177,6 +183,24 @@ export function paginate(
       y = top(page);
     }
 
+    if (block.floatHeight !== undefined) {
+      // Floats sit beside the following text: they don't advance `y`, but
+      // one that doesn't fit what's left of the page moves to the next.
+      if (y + block.floatHeight > bottom(page) + EPSILON && y > top(page) + EPSILON) {
+        page = nextPage(page);
+        push += top(page) - y;
+        y = top(page);
+      }
+      pushes.push(push);
+      splits.push([]);
+      pageOf.push(page);
+      sectionOf.push(section);
+      pageHasContent = true;
+      lastPiecePage = Math.max(lastPiecePage, page);
+      continue;
+    }
+
+    const repeat = block.repeatHeight ?? 0;
     let breaks: number[] | null = null;
     const loadBreaks = () => (breaks ??= block.getBreaks?.() ?? []);
     let consumed = 0; // how much of the block's own height is already placed
@@ -212,12 +236,13 @@ export function paginate(
       }
 
       const next = nextPage(page);
-      const gap = top(next) - (y + (choice.at - consumed));
+      // Continuations start below the repeated header rows.
+      const gap = top(next) + repeat - (y + (choice.at - consumed));
       blockSplits.push({ at: choice.at, index: choice.index, gap });
       consumed = choice.at;
       page = next;
       piecePages.push(page);
-      y = top(page);
+      y = top(page) + repeat;
     }
 
     // Footnotes go on the page holding the piece their reference is in.

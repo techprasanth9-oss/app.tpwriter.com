@@ -81,3 +81,96 @@ test("a long list splits between items", async ({ page, request }) => {
   expect(layout.bad).toEqual([]);
   await expect(page.locator(".ce-block", { hasText: "Item 1" }).locator(".tp-split")).not.toHaveCount(0);
 });
+
+test("table header rows repeat at the top of continuation pages", async ({ page, request }) => {
+  const rows = [["Name", "Region", "Total"], ...Array.from({ length: 60 }, (_, r) => [`Item ${r + 1}`, "EU", String(r * 10)])];
+  const id = await createDocument(request, "Repeat header", [
+    ...filler(6),
+    { id: "t", type: "table", data: { withHeading: true, headerRows: 1, repeatHeader: true, content: rows } },
+  ]);
+  await openDocument(page, id);
+  const ghosts = page.locator(".tp-table-ghost");
+  const sheets = await page.locator(".tp-sheet").count();
+  expect(sheets).toBeGreaterThanOrEqual(3);
+  await expect(ghosts).toHaveCount(sheets - 1);
+  // Each copy sits at the top of the next page's text area, above the rows.
+  const placement = await page.evaluate(() => {
+    const sheets = [...document.querySelectorAll(".tp-sheet")].map((s) => s.getBoundingClientRect());
+    return [...document.querySelectorAll(".tp-table-ghost")].map((g, i) => {
+      const r = g.getBoundingClientRect();
+      return { offsetFromSheetTop: Math.round(r.top - sheets[i + 1]!.top), text: g.textContent };
+    });
+  });
+  for (const p of placement) {
+    expect(p.text).toContain("NameRegionTotal");
+    expect(Math.abs(p.offsetFromSheetTop - 96)).toBeLessThan(3);
+  }
+  expect((await textOutsidePages(page)).bad).toEqual([]);
+});
+
+test("a table never breaks inside a vertically merged cell", async ({ page, request }) => {
+  const content = Array.from({ length: 40 }, (_, r) => [`R${r + 1}`, `V${r + 1}`]);
+  const cells = Array.from({ length: 40 }, () => [{}, {}]) as Array<Array<Record<string, unknown>>>;
+  // Rows 14–21 share one merged cell in column 2: it straddles where a
+  // naive split would fall.
+  cells[13]![1] = { rowSpan: 8 };
+  for (let r = 14; r < 21; r++) content[r] = [`R${r + 1}`];
+  const id = await createDocument(request, "Merged split", [
+    ...filler(20),
+    { id: "t", type: "table", data: { content, styles: { cells } } },
+  ]);
+  await openDocument(page, id);
+  const merged = await page.evaluate(() => {
+    const cell = [...document.querySelectorAll<HTMLTableCellElement>("table td")].find((c) => c.rowSpan === 8)!;
+    const r = cell.getBoundingClientRect();
+    const sheets = [...document.querySelectorAll(".tp-sheet")].map((s) => s.getBoundingClientRect());
+    return sheets.some((s) => r.top >= s.top && r.bottom <= s.bottom);
+  });
+  expect(merged).toBe(true);
+  expect((await textOutsidePages(page)).bad).toEqual([]);
+});
+
+test("text wraps beside an image floated left", async ({ page, request }) => {
+  const png =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const id = await createDocument(request, "Wrap", [
+    {
+      id: "img",
+      type: "image",
+      data: {
+        file: { url: png },
+        dimensions: { width: "200px", height: "150px" },
+        tunes: { imageTune: { wrapText: "square", float: "left" } },
+      },
+    },
+    { id: "p1", type: "paragraph", data: { text: "Text beside the image. ".repeat(12) } },
+  ]);
+  await openDocument(page, id);
+  const geometry = await page.evaluate(() => {
+    const img = document.querySelector('.ce-block[data-id="img"]')!.getBoundingClientRect();
+    const para = document.querySelector('.ce-block[data-id="p1"]')!.getBoundingClientRect();
+    return { imgRight: img.right, paraLeft: para.left, imgTop: img.top, paraTop: para.top };
+  });
+  expect(geometry.paraLeft).toBeGreaterThanOrEqual(geometry.imgRight);
+  expect(Math.abs(geometry.paraTop - geometry.imgTop)).toBeLessThan(20);
+});
+
+test("columns hold real blocks (headings, lists), not stubs", async ({ page, request }) => {
+  const id = await createDocument(request, "Columns", [
+    {
+      id: "c",
+      type: "column",
+      data: {
+        numberOfColumns: 2,
+        cols: [
+          { blocks: [{ id: "h", type: "header", data: { text: "Left heading", level: 2 } }] },
+          { blocks: [{ id: "l", type: "list", data: { style: "unordered", items: [{ content: "Point", meta: {}, items: [] }], meta: {} } }] },
+        ],
+      },
+    },
+  ]);
+  await openDocument(page, id);
+  await expect(page.locator(".custom-columns-tool .ce-header")).toHaveText("Left heading");
+  await expect(page.locator(".custom-columns-tool .cdx-list")).toContainText("Point");
+  await expect(page.locator(".custom-columns-tool .ce-stub")).toHaveCount(0);
+});

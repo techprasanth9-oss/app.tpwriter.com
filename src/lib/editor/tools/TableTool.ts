@@ -46,7 +46,10 @@ interface TableData {
   // Tier-2 fields. All optional + default-off so legacy tables load
   // exactly as before.
   theme?: string;
-  repeatHeaderOnPrint?: boolean;
+  /** Repeat the leading header rows at the top of every page the table
+   *  continues onto (Word's "Repeat as header row"). Defaults to true.
+   *  Legacy data stored this as `repeatHeaderOnPrint`. */
+  repeatHeader?: boolean;
   tableAlign?: "left" | "center" | "right";
   caption?: string;
   captionPosition?: "top" | "bottom";
@@ -85,6 +88,7 @@ interface TableData {
         paddingLeft?: string;
         paddingRight?: string;
         verticalAlign?: string;
+        fontWeight?: string;
         // Diagonal line across the cell. "down" = TL→BR, "up" = BL→TR,
         // undefined/"" = no diagonal. Rendered as a per-cell SVG overlay
         // in enhanceDiagonalBorders().
@@ -92,6 +96,61 @@ interface TableData {
       };
     };
   };
+}
+
+/** A positive integer span, or 1. */
+function spanOf(value: unknown): number {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 1 ? Math.min(n, 1000) : 1;
+}
+
+/** `content` as a non-empty string[][] (rows may be empty: a row wholly
+ *  covered by cells merged down from above has no cells of its own). */
+function normalizeContent(raw: unknown): string[][] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return [
+      ["", "", ""],
+      ["", "", ""],
+      ["", "", ""],
+    ];
+  }
+  return raw.map((row) =>
+    Array.isArray(row)
+      ? row.map((c) => (typeof c === "string" ? c : c == null ? "" : String(c)))
+      : [],
+  );
+}
+
+/**
+ * Lay the saved cells out on the logical grid (cells keep the HTML
+ * table-layout rules: each lands in the next free slot, spans reserve the
+ * slots below / to the right) and give rows that end short of the grid
+ * width empty trailing cells. Repairs tables an earlier version corrupted
+ * (e.g. deleting a row through a vertical merge dropped a cell); a
+ * well-formed table is left untouched.
+ */
+function padRaggedRows(content: string[][], cells: any): void {
+  const occupied: boolean[][] = content.map(() => []);
+  content.forEach((row, r) => {
+    let c = 0;
+    row.forEach((_, j) => {
+      while (occupied[r][c]) c++;
+      const st = cells?.[r]?.[j] || {};
+      const cs = spanOf(st.colSpan);
+      const rs = Math.min(spanOf(st.rowSpan), content.length - r);
+      for (let rr = r; rr < r + rs; rr++) {
+        for (let cc = c; cc < c + cs; cc++) occupied[rr][cc] = true;
+      }
+      c += cs;
+    });
+  });
+  const width = Math.max(0, ...occupied.map((o) => o.length));
+  content.forEach((row, r) => {
+    const occ = occupied[r];
+    let trailing = 0;
+    for (let c = width - 1; c >= 0 && !occ[c]; c--) trailing++;
+    for (let k = 0; k < trailing; k++) row.push("");
+  });
 }
 
 interface PasteConfig {
@@ -176,21 +235,21 @@ class TableTool {
     this.block = block;
     this.data = {
       id: data.id || this.generateUniqueId(),
-      content: data.content || [
-        ["", "", ""],
-        ["", "", ""],
-        ["", "", ""],
-      ],
-      withHeading: data.withHeading || false,
-      headerRows: data.headerRows || [],
+      content: normalizeContent(data.content),
+      withHeading: Boolean(data.withHeading ?? data.withHeadings),
+      headerRows: Array.isArray(data.headerRows)
+        ? data.headerRows.filter((n: unknown) => Number.isInteger(n) && (n as number) >= 0)
+        : [],
       hideBorders: data.hideBorders || false,
       columnWidths: data.columnWidths || [],
       rowHeights: data.rowHeights || [],
       theme: data.theme || "none",
-      repeatHeaderOnPrint:
-        typeof data.repeatHeaderOnPrint === "boolean"
-          ? data.repeatHeaderOnPrint
-          : true,
+      repeatHeader:
+        typeof data.repeatHeader === "boolean"
+          ? data.repeatHeader
+          : typeof data.repeatHeaderOnPrint === "boolean"
+            ? data.repeatHeaderOnPrint
+            : true,
       tableAlign: data.tableAlign || "left",
       caption: data.caption || "",
       captionPosition: data.captionPosition || "top",
@@ -212,6 +271,11 @@ class TableTool {
         cells: data.styles?.cells || {},
       },
     };
+    // Old exports withHeading without headerRows: the first row is the header.
+    if (this.data.withHeading && this.data.headerRows.length === 0) {
+      this.data.headerRows = [0];
+    }
+    padRaggedRows(this.data.content, this.data.styles.cells);
 
     this.wrapper = document.createElement("div");
     this.wrapper.classList.add(this.CSS.wrapper);
@@ -300,38 +364,25 @@ class TableTool {
 
     updateHandlePosition();
 
-    const resizeObserver = new ResizeObserver(() => {
-      updateHandlePosition();
-    });
-    resizeObserver.observe(this.table);
+    // One observer per tool: a re-render (paste) replaces the old one.
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
+    if (typeof ResizeObserver !== "undefined") {
+      this.resizeObserver = new ResizeObserver(() => {
+        if (this.table?.isConnected) updateHandlePosition();
+      });
+      this.resizeObserver.observe(this.table);
+    }
 
     return resizeHandle;
   }
 
   render() {
-    this.createTable();
-    this.attachEventListeners();
-    // Row/column drag-resize cursors on cell edges + Tab/Shift+Tab
-    // navigation. Both are no-ops in read-only mode so the completed /
-    // preview routes get the same inert table they always had.
-    this.attachEdgeResizeHandlers();
-    this.attachKeyboardNavigation();
-    this.applyTableStyles();
-
+    // Never overflow:hidden/auto here: the paginator offsets rows
+    // (position:relative; top) past the table's own box.
     this.wrapper.style.position = "relative";
     this.wrapper.style.overflow = "visible";
-
-    const existingHandle = this.wrapper.querySelector(
-      `.${this.CSS.resizeHandle}`,
-    );
-    if (existingHandle) {
-      existingHandle.remove();
-    }
-
-    const resizeHandle = this.createResizeHandle();
-    if (resizeHandle) {
-      this.wrapper.appendChild(resizeHandle);
-    }
+    this.rebuildTable();
     return this.wrapper;
   }
 
@@ -341,330 +392,107 @@ class TableTool {
     return !this.readOnly;
   }
 
-  destroy() {
-    /* No-op. eSigns used this to detach the `clm:linked-table-changed`
-     * window listener, which no longer exists in this port. */
-  }
+  // ── Lifecycle bookkeeping ─────────────────────────────────────────────
+  // Document-level listeners are added once per tool (not per rebuild) and
+  // removed in destroy(); popups appended to <body> register a disposer so
+  // a block deleted with a menu open doesn't leave it (and its document
+  // listener) behind.
+  private docListenersAttached = false;
+  private resizeObserver: ResizeObserver | null = null;
+  private disposers = new Set<() => void>();
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // The CLM linked-field surface (linkedField, linkedUsers, viewerEmail,
-  // viewerFinished, cacheLinkedValue, emitLinkedChange, onLinkedChange,
-  // renderLinkedBadge, buildOwnerList, isLinked, ownerName) was removed as
-  // part of the port — see cellsEditable above. The remaining declarations
-  // keep rebuildTable intact for use by resize / cell-edit paths.
-  // ──────────────────────────────────────────────────────────────────────────
+  private onDocumentClick = (e: MouseEvent) => this.handleDocumentClick(e);
 
-  // Stub declarations retained so the renamed-but-dead CLM method bodies
-  // below still type-check without pulling the whole surface back in.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private linkedEmitTimer: any = null;
-  private lastLinkedJson = "";
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private linkedUsers: any[] = [];
-  private viewerEmail = "";
-  private viewerFinished = false;
-
-  /** Field value ({ columns, rows } plain text) read from this table's content. */
-  private _STRIPPED_linkedValueFromContent() {
-    const toText = (html: string) => {
-      const div = document.createElement("div");
-      div.innerHTML = String(html || "").replace(/<br\s*\/?>/gi, "\n");
-      return (div.textContent || "").replace(/ /g, " ");
-    };
-    const [head = [], ...rows] = (this.data.content || []) as string[][];
-    return {
-      columns: head.map(toText),
-      rows: rows.map((r) => r.map(toText)),
-    };
-  }
-
-  /** Latest value per field_key, so a newly inserted copy starts in sync. */
-  private _STRIPPED_cacheLinkedValue() {
-    const w = window as any;
-    w.__clmLinkedTableValues = w.__clmLinkedTableValues || {};
-    const value = this._STRIPPED_linkedValueFromContent();
-    w.__clmLinkedTableValues[this.data.linkedField.field_key] = value;
-    this.lastLinkedJson = JSON.stringify(value);
-  }
-
-  /** Builder / template routes — where the sender authors (assigns owner). */
-  private get _STRIPPED_isAuthoringRoute(): boolean {
-    const p = window.location.pathname;
-    return (
-      p.includes("contract-document-preview") ||
-      p.includes("clm-template-editor") ||
-      p.includes("document-preview") ||
-      p.includes("template-preview")
-    );
-  }
-
-  /**
-   * A linked table is a FIELD: only its assigned owner edits it, and only on
-   * the signing page (after send-to-signatures). Everyone else — including
-   * the sender in the builder — sees it read-only.
-   */
-  private get _STRIPPED_ownerCanEdit(): boolean {
-    const ownerId = this.data?.linkedField?.user_id;
-    if (!this._STRIPPED_isLinked || !ownerId || this._STRIPPED_isAuthoringRoute) return false;
-    if (this.viewerFinished) return false;
-    const params = new URLSearchParams(window.location.search);
-    const email = (params.get("email") || this.viewerEmail || "").toLowerCase();
-    if (!email) return false;
-    const viewer = this.linkedUsers.find(
-      (u: any) => String(u?.email || "").toLowerCase() === email,
-    );
-    return !!viewer && String(viewer._id) === String(ownerId);
-  }
-
-  /** Builder / template editor while the document is still editable (before send). */
-  private get _STRIPPED_authorCanEdit(): boolean {
-    return this._STRIPPED_isLinked && this._STRIPPED_isAuthoringRoute && !this.readOnly;
-  }
-
-  /**
-   * Cell editability. Normal tables as before. Linked tables: the sender
-   * edits any of them in the builder while drafting (readOnly once sent);
-   * after sending only the assigned recipient edits, on the signing page.
-   */
-  private get _STRIPPED_cellsEditable_CLM(): boolean {
-    return !this.readOnly;
-  }
-
-  /**
-   * Debounced broadcast of an edit.
-   *  - builder (draft): every copy of the field + persisted as the contract's
-   *    value (ContractDocumentPreview) / the template default (CLMTemplateEditor)
-   *  - signing page (owner): only this owner's copies + signing-page state
-   */
-  private _STRIPPED_emitLinkedChange() {
-    const authoring = this._STRIPPED_authorCanEdit;
-    if (!authoring && !this._STRIPPED_ownerCanEdit) return;
-    if (JSON.stringify(this._STRIPPED_linkedValueFromContent()) === this.lastLinkedJson) return;
-    if (this.linkedEmitTimer) clearTimeout(this.linkedEmitTimer);
-    // A hand-edited copy keeps its own data from now on — metadata /
-    // template defaults no longer overwrite it (see `customized` readers).
-    if (authoring && !this.data.linkedField.customized) {
-      this.data.linkedField = { ...this.data.linkedField, customized: true };
+  private onDocumentMouseUp = () => {
+    if (this.isSelecting) {
+      this.isSelecting = false;
+      if (!this.selectionEnd) {
+        this.selectionEnd = this.selectionStart;
+        this.selectionEndRow = this.selectionStartRow;
+        this.selectionEndCol = this.selectionStartCol;
+        this.selectionEndEndCol = this.selectionStartEndCol;
+      }
+      this.finalizeSelection();
     }
-    this.linkedEmitTimer = setTimeout(() => {
-      const field_key = this.data.linkedField.field_key;
-      const value = this._STRIPPED_linkedValueFromContent();
-      if (JSON.stringify(value) === this.lastLinkedJson) return;
-      this._STRIPPED_cacheLinkedValue();
-      window.dispatchEvent(
-        new CustomEvent("clm:linked-table-changed", {
-          detail: {
-            field_key,
-            value,
-            sourceId: this.data.id,
-            // Copies assigned to different recipients are independent.
-            owner_id: this.data.linkedField.user_id || "",
-            customized: authoring,
-          },
-        }),
-      );
-    }, 300);
-  }
-
-  /** Another copy of the same field changed — mirror its data. */
-  private _STRIPPED_onLinkedChange = (e: Event) => {
-    const { field_key, value, sourceId, owner_id, customized } =
-      (e as CustomEvent).detail || {};
-    if (!this._STRIPPED_isLinked || field_key !== this.data.linkedField.field_key) return;
-    // Copies assigned to different recipients are independent tables.
-    if (owner_id !== undefined && String(owner_id) !== String(this.data.linkedField.user_id || "")) {
-      return;
-    }
-    // Field-level pushes (no owner: template defaults / metadata) never
-    // overwrite a copy the sender edited by hand.
-    if (owner_id === undefined && this.data.linkedField.customized) return;
-    if (sourceId === this.data.id) return;
-    if (!this.wrapper?.isConnected) return;
-    // Never rebuild under the user's caret — an echo of an older value would
-    // eat what they are typing. Their own debounced emit wins.
-    if (this.table?.contains(document.activeElement)) return;
-    // Original eSigns code called applyTableValueToBlockData(this.data, value) —
-    // helper removed with the CLM port; this branch is unreachable now.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const next: any = this.data;
-    if (JSON.stringify(next.content) === JSON.stringify(this.data.content)) return;
-    this.data = customized
-      ? { ...next, linkedField: { ...next.linkedField, customized: true } }
-      : next;
-    this._STRIPPED_cacheLinkedValue();
-    this.rebuildTable();
   };
 
+  /**
+   * Mount a popup (on <body> unless `parent` is given), close it on an
+   * outside `eventType`, and make destroy() clean it up. Returns close().
+   */
+  private openFloating(
+    el: HTMLElement,
+    opts: { parent?: HTMLElement; eventType?: "mousedown" | "click"; delay?: number } = {},
+  ): () => void {
+    const { parent = document.body, eventType = "mousedown", delay = 10 } = opts;
+    parent.appendChild(el);
+    const onOutside = (e: Event) => {
+      if (!el.contains(e.target as Node)) close();
+    };
+    const timer = setTimeout(() => document.addEventListener(eventType, onOutside), delay);
+    const close = () => {
+      clearTimeout(timer);
+      document.removeEventListener(eventType, onOutside);
+      el.remove();
+      this.disposers.delete(close);
+    };
+    this.disposers.add(close);
+    return close;
+  }
+
+  destroy() {
+    document.removeEventListener("click", this.onDocumentClick);
+    document.removeEventListener("mouseup", this.onDocumentMouseUp);
+    this.docListenersAttached = false;
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
+    Array.from(this.disposers).forEach((dispose) => dispose());
+    this.disposers.clear();
+    this.hideContextMenu();
+  }
+
+  /** This table's own cells — not those of a table nested in a cell. */
+  private ownCells(): HTMLTableCellElement[] {
+    if (!this.table) return [];
+    return Array.from(this.table.rows).flatMap((r: HTMLTableRowElement) =>
+      Array.from(r.cells),
+    );
+  }
+
+  /** The cell of THIS table an event target sits in (skips nested tables). */
+  private ownCellFrom(target: EventTarget | null): HTMLTableCellElement | null {
+    let el = target instanceof Element ? target : (target as Node | null)?.parentElement;
+    while (el) {
+      const cell = el.closest("td, th") as HTMLTableCellElement | null;
+      if (!cell) return null;
+      if (cell.closest("table") === this.table) return cell;
+      el = cell.parentElement;
+    }
+    return null;
+  }
+
+  /** Number of leading rows that are header rows (0..n-1 all headers). */
+  private headerPrefixCount(): number {
+    const set = new Set(this.data.headerRows || []);
+    let n = 0;
+    while (n < this.data.content.length && set.has(n)) n++;
+    return n;
+  }
+
+  /** (Re)build the table DOM from this.data with all its behaviour. */
   private rebuildTable() {
+    this.hideContextMenu();
     this.createTable();
     this.attachEventListeners();
+    // Row/column drag-resize cursors on cell edges + Tab/Shift+Tab
+    // navigation. Both are no-ops in read-only mode.
     this.attachEdgeResizeHandlers();
     this.attachKeyboardNavigation();
     this.applyTableStyles();
-  }
-
-  // Original CLM removed()/destroy() methods were replaced by the
-  // simpler no-op destroy() above.
-  private _STRIPPED_removed() { /* no-op */ }
-  private _STRIPPED_destroy_CLM() { /* no-op */ }
-
-  private get _STRIPPED_isLinked(): boolean {
-    return !!this.data?.linkedField?.field_key;
-  }
-
-  private _STRIPPED_ownerName(): string {
-    const lf = this.data.linkedField || {};
-    const u = this.linkedUsers.find((x: any) => String(x?._id) === String(lf.user_id));
-    const fromUser = u
-      ? [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email
-      : "";
-    return fromUser || lf.user_name || "";
-  }
-
-  /**
-   * Linked table chrome. No badge — the owner is shown/changed from the
-   * right-click menu ("Who fills" panel). Signing page (owner only): blue
-   * outline + add/remove row controls.
-   */
-  private _STRIPPED_renderLinkedBadge() {
-    this.wrapper.querySelector(".te-linked-owner-actions")?.remove();
-    if (!this._STRIPPED_isLinked) return;
-    this.wrapper.dataset.linkedFieldKey = this.data.linkedField.field_key;
-    // Attribute change inside the block → EditorJS's mutation observer
-    // marks the block changed, so a re-assigned owner is saved.
-    this.wrapper.dataset.linkedOwner = String(this.data.linkedField.user_id || "");
-
-    if (this._STRIPPED_ownerCanEdit) {
-      this.wrapper.style.outline = "2px solid #60a5fa";
-      this.wrapper.style.outlineOffset = "4px";
-      this.wrapper.style.borderRadius = "4px";
-      const actions = document.createElement("div");
-      actions.className = "te-linked-owner-actions";
-      actions.contentEditable = "false";
-      Object.assign(actions.style, { display: "flex", gap: "6px", marginTop: "6px" });
-      const mkBtn = (text: string, onClick: () => void) => {
-        const b = document.createElement("button");
-        b.type = "button";
-        b.textContent = text;
-        Object.assign(b.style, {
-          fontSize: "12px",
-          padding: "2px 10px",
-          border: "1px dashed #93c5fd",
-          borderRadius: "6px",
-          color: "#1d4ed8",
-          background: "#eff6ff",
-          cursor: "pointer",
-        });
-        b.addEventListener("click", (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          onClick();
-        });
-        return b;
-      };
-      const cols = this.data.content?.[0]?.length || 1;
-      actions.appendChild(
-        mkBtn(t("ContactForm.tableField.addRow", { defaultValue: "Add row" }), () => {
-          this.data.content.push(Array(cols).fill(""));
-          this.rebuildTable();
-          this._STRIPPED_emitLinkedChange();
-        }),
-      );
-      if ((this.data.content?.length || 0) > 1) {
-        actions.appendChild(
-          mkBtn(
-            t("editor.tools.table.removeLastRow", { defaultValue: "Remove last row" }),
-            () => {
-              this.data.content.pop();
-              this.rebuildTable();
-              this._STRIPPED_emitLinkedChange();
-            },
-          ),
-        );
-      }
-      this.wrapper.appendChild(actions);
-    }
-  }
-
-  /** Recipient list for "Who fills" — rendered inline in the right-click menu. */
-  private _STRIPPED_buildOwnerList(onPicked: () => void): HTMLElement {
-    const users = this.linkedUsers.filter((u: any) => !u?.is_cc && u?._id);
-    const list = document.createElement("div");
-    list.className = "te-linked-owner-list";
-    Object.assign(list.style, {
-      background: "#fff",
-      border: "1px solid #bfdbfe",
-      borderRadius: "6px",
-      maxHeight: "220px",
-      overflowY: "auto",
-      padding: "4px",
-      fontSize: "13px",
-    });
-    if (!users.length) {
-      const empty = document.createElement("div");
-      empty.textContent = t("editor.tools.table.noRecipients", {
-        defaultValue: "Add recipients first",
-      });
-      Object.assign(empty.style, { padding: "8px 10px", color: "#9ca3af" });
-      list.appendChild(empty);
-    }
-    users.forEach((u: any) => {
-      const name = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email;
-      const role = u.value || u.role || "";
-      const selected = String(u._id) === String(this.data.linkedField?.user_id);
-      const item = document.createElement("div");
-      Object.assign(item.style, {
-        display: "flex",
-        alignItems: "center",
-        gap: "8px",
-        padding: "6px 10px",
-        borderRadius: "6px",
-        cursor: "pointer",
-        background: selected ? "#eff6ff" : "transparent",
-        fontWeight: selected ? "600" : "400",
-      });
-      const dot = document.createElement("span");
-      Object.assign(dot.style, {
-        width: "8px",
-        height: "8px",
-        borderRadius: "50%",
-        flexShrink: "0",
-        background: u.color || "#93c5fd",
-      });
-      const text = document.createElement("span");
-      text.textContent = role ? `${name} (${role})` : name;
-      text.style.flex = "1";
-      item.appendChild(dot);
-      item.appendChild(text);
-      if (selected) {
-        const tick = document.createElement("span");
-        tick.textContent = "✓";
-        tick.style.color = "#2563eb";
-        item.appendChild(tick);
-      }
-      item.addEventListener("mouseenter", () => (item.style.background = "#f3f4f6"));
-      item.addEventListener(
-        "mouseleave",
-        () => (item.style.background = selected ? "#eff6ff" : "transparent"),
-      );
-      item.addEventListener("click", (ev) => {
-        ev.stopPropagation();
-        this.data.linkedField = {
-          ...this.data.linkedField,
-          user_id: String(u._id),
-          user_name: name,
-        };
-        this._STRIPPED_renderLinkedBadge();
-        try {
-          this.block?.dispatchChange?.();
-        } catch {
-          /* older EditorJS */
-        }
-        onPicked();
-      });
-      list.appendChild(item);
-    });
-    return list;
+    // createTable clears the wrapper, so the corner handle goes back on.
+    this.wrapper.querySelector(`.${this.CSS.resizeHandle}`)?.remove();
+    const resizeHandle = this.createResizeHandle();
+    if (resizeHandle) this.wrapper.appendChild(resizeHandle);
   }
 
 
@@ -693,10 +521,12 @@ class TableTool {
     // browsers (and Puppeteer in the print pipeline) repeat the
     // header on every page break — matching Word's "Repeat header
     // rows at the top of each page" setting.
-    const useSections =
-      this.data.repeatHeaderOnPrint !== false &&
-      !!this.data.headerRows &&
-      this.data.headerRows.length > 0;
+    // Only the LEADING header rows go in <thead> and repeat: a header row
+    // further down (legacy data) stays in place so the visual order — and
+    // `table.rows` order, which the paginator relies on — is the data order.
+    const repeatCount =
+      this.data.repeatHeader !== false ? this.headerPrefixCount() : 0;
+    const useSections = repeatCount > 0;
     let thead: HTMLTableSectionElement | null = null;
     let tbody: HTMLTableSectionElement | null = null;
     if (useSections) {
@@ -713,10 +543,16 @@ class TableTool {
       if (this.data.headerRows?.includes(rowIndex)) {
         tr.classList.add(this.CSS.header);
       }
-
-      if (this.data.styles.rows[rowIndex]) {
-        Object.assign(tr.style, this.data.styles.rows[rowIndex]);
+      // Paginator contract: leading header rows that repeat on every
+      // continuation page carry data-repeat-header="true".
+      if (rowIndex < repeatCount) {
+        tr.dataset.repeatHeader = "true";
       }
+
+      // Only the row colour is a row style. Never restore position/top —
+      // the paginator owns those on <tr> to push rows onto the next page.
+      const rowBg = this.data.styles.rows?.[rowIndex]?.backgroundColor;
+      if (rowBg) tr.style.backgroundColor = rowBg;
 
       // Apply stored row height if present. Written by the row drag-resize
       // handle and the Row Height popup. undefined entries fall through to
@@ -746,18 +582,19 @@ class TableTool {
         cell.style.whiteSpace = this.data.hideBorders ? "normal" : "pre-wrap";
         cell.style.overflowWrap = "break-word";
 
-        if (
-          this.data.styles.cells[rowIndex] &&
-          this.data.styles.cells[rowIndex][colIndex]
-        ) {
-          const cellStyles = this.data.styles.cells[rowIndex][colIndex];
-          const rawStyleStr =
-            this.data.styles.cells[rowIndex] &&
-            this.data.styles.cells[rowIndex][colIndex];
-          if (rawStyleStr) {
-            const styleObj = this.parseStyleString(rawStyleStr);
-            Object.assign(cell.style, styleObj);
-          }
+        // Table-default borders first; a cell's own saved borders override.
+        if (this.data.hideBorders) {
+          cell.style.borderWidth = "0";
+          cell.style.borderStyle = "none";
+          cell.style.borderColor = "transparent";
+        } else {
+          cell.style.borderWidth = this.data.styles.table.borderWidth;
+          cell.style.borderStyle = this.data.styles.table.borderStyle;
+          cell.style.borderColor = this.data.styles.table.borderColor;
+        }
+
+        const cellStyles = this.data.styles.cells?.[rowIndex]?.[colIndex];
+        if (cellStyles && typeof cellStyles === "object") {
           if (cellStyles.backgroundColor)
             cell.style.backgroundColor = cellStyles.backgroundColor;
           if (cellStyles.borderColor)
@@ -777,9 +614,18 @@ class TableTool {
           if (cellStyles.borderLeft)
             cell.style.borderLeft = cellStyles.borderLeft;
           if (cellStyles.textAlign) cell.style.textAlign = cellStyles.textAlign;
-          if (cellStyles.colSpan) cell.colSpan = cellStyles.colSpan;
-          if (cellStyles.rowSpan) cell.rowSpan = cellStyles.rowSpan;
+          // Merges render as real colSpan / rowSpan (the paginator reads
+          // cell.rowSpan to avoid breaking inside a vertical merge). A
+          // rowSpan can't reach past the last row.
+          const cs = spanOf(cellStyles.colSpan);
+          const rs = Math.min(
+            spanOf(cellStyles.rowSpan),
+            this.data.content.length - rowIndex,
+          );
+          if (cs > 1) cell.colSpan = cs;
+          if (rs > 1) cell.rowSpan = rs;
           if (cellStyles.color) cell.style.color = cellStyles.color;
+          if (cellStyles.fontWeight) cell.style.fontWeight = cellStyles.fontWeight;
           if (cellStyles.paddingTop)
             cell.style.paddingTop = cellStyles.paddingTop;
           if (cellStyles.paddingBottom)
@@ -790,16 +636,6 @@ class TableTool {
             cell.style.paddingRight = cellStyles.paddingRight;
           if (cellStyles.verticalAlign)
             cell.style.verticalAlign = cellStyles.verticalAlign;
-        } else {
-          if (this.data.hideBorders) {
-            cell.style.borderWidth = "0";
-            cell.style.borderStyle = "none";
-            cell.style.borderColor = "transparent";
-          } else {
-            cell.style.borderWidth = this.data.styles.table.borderWidth;
-            cell.style.borderStyle = this.data.styles.table.borderStyle;
-            cell.style.borderColor = this.data.styles.table.borderColor;
-          }
         }
 
         // Inject stored image from cellImages (bypasses EditorJS sanitization)
@@ -846,7 +682,6 @@ class TableTool {
               cell.textContent = String(result);
               cell.dataset.formulaDisplayed = "value";
               cell.title = text;
-              this.data.content[rowIndex][colIndex] = text;
               this.updateData();
               return;
             }
@@ -856,37 +691,11 @@ class TableTool {
           cell.removeAttribute("title");
         });
 
-        cell.addEventListener("input", () => {
-          // Exclude managed cell images from text content
-          const clone = cell.cloneNode(true) as HTMLElement;
-          clone
-            .querySelectorAll("[data-cell-image]")
-            .forEach((el) => el.remove());
-          // Unwrap inline-image resize wrappers so we save clean
-          // <img> HTML — the wrapper is a runtime UI concern only.
-          clone
-            .querySelectorAll("[data-inline-resize-wrapped]")
-            .forEach((wrap) => {
-              const img = wrap.querySelector("img");
-              if (img && wrap.parentNode) {
-                wrap.parentNode.replaceChild(img, wrap);
-              } else {
-                wrap.remove();
-              }
-            });
-          // While the admin is editing a formula cell the DOM shows the
-          // raw =FUNC(...) text — save that as the canonical content so
-          // we don't lose the formula on partial edits.
-          this.data.content[rowIndex][colIndex] = clone.innerHTML;
-          this.updateData();
-        });
+        // Content is read back from the DOM (updateData strips the
+        // runtime-only image wrappers / overlays and keeps formulas).
+        cell.addEventListener("input", () => this.updateData());
       });
-      if (
-        useSections &&
-        thead &&
-        tbody &&
-        this.data.headerRows?.includes(rowIndex)
-      ) {
+      if (useSections && thead && tbody && rowIndex < repeatCount) {
         thead.appendChild(tr);
       } else if (useSections && tbody) {
         tbody.appendChild(tr);
@@ -903,68 +712,49 @@ class TableTool {
     this.applyColumnWidths();
   }
 
-  private parseStyleString(styleStr: string) {
-    const regex = /style="([^"]+)"/g;
-    let match;
-    const styleObj: any = {};
-    while ((match = regex.exec(styleStr)) !== null) {
-      const declarations = match[1].split(";");
-      declarations.forEach((decl) => {
-        const [property, value] = decl
-          .split(":")
-          .map((item) => item && item.trim());
-        if (property && value) {
-          styleObj[property] = value;
-        }
-      });
-    }
-    return styleObj;
+  /** Logical column count: the width of the grid the cells (with their
+   *  spans) occupy — not just the widest row's colSpan sum. */
+  private getNumCols(): number {
+    return this.layoutGrid().numCols;
   }
 
-  private getNumCols(): number {
-    let max = 0;
-    Array.from(this.table.rows).forEach((row: HTMLTableRowElement) => {
-      let sum = 0;
+  /**
+   * Lay this table's cells out on the logical grid (HTML table rules).
+   * Tolerant of malformed spans: the grid grows instead of bailing out,
+   * so structural operations always see the table's real shape.
+   */
+  private layoutGrid() {
+    type Owner = { cell: HTMLTableCellElement; startRow: number; startCol: number };
+    const rows = this.table ? Array.from(this.table.rows) : [];
+    const numRows = rows.length;
+    const owner: (Owner | null)[][] = rows.map(() => []);
+    rows.forEach((row: HTMLTableRowElement, i: number) => {
+      let c = 0;
       Array.from(row.cells).forEach((cell: HTMLTableCellElement) => {
-        sum += cell.colSpan || 1;
+        while (owner[i][c]) c++;
+        const rs = Math.min(Math.max(1, cell.rowSpan || 1), numRows - i);
+        const cs = Math.max(1, cell.colSpan || 1);
+        const o = { cell, startRow: i, startCol: c };
+        for (let rr = i; rr < i + rs; rr++) {
+          for (let cc = c; cc < c + cs; cc++) {
+            if (!owner[rr][cc]) owner[rr][cc] = o;
+          }
+        }
+        cell.dataset.logicalStartCol = String(c);
+        cell.dataset.logicalEndCol = String(c + cs - 1);
+        c += cs;
       });
-      max = Math.max(max, sum);
     });
-    return max;
+    const numCols = Math.max(0, ...owner.map((r) => r.length));
+    owner.forEach((r) => {
+      for (let c = 0; c < numCols; c++) if (!r[c]) r[c] = null;
+    });
+    return { owner, numCols, numRows };
   }
 
   private assignLogicalCols() {
-    const numRows = this.table.rows.length;
-    const numCols = this.getNumCols();
-    const owner: {
-      cell: HTMLTableCellElement;
-      startRow: number;
-      startCol: number;
-    }[][] = Array.from({ length: numRows }, () => Array(numCols).fill(null));
-
-    for (let i = 0; i < numRows; i++) {
-      let c = 0;
-      const row = this.table.rows[i];
-      for (let k = 0; k < row.cells.length; k++) {
-        const cell = row.cells[k];
-        while (c < numCols && owner[i][c] !== null) c++;
-        if (c >= numCols) return;
-        const rs = cell.rowSpan || 1;
-        const cs = cell.colSpan || 1;
-        if (c + cs > numCols) return;
-        for (let rr = i; rr < i + rs; rr++) {
-          if (rr >= numRows) break;
-          for (let cc = c; cc < c + cs; cc++) {
-            if (owner[rr][cc] !== null) return;
-            owner[rr][cc] = { cell, startRow: i, startCol: c };
-          }
-        }
-        cell.dataset.logicalStartCol = c.toString();
-        cell.dataset.logicalEndCol = (c + cs - 1).toString();
-        c += cs;
-      }
-    }
-    this.ownerGrid = owner;
+    if (!this.table) return;
+    this.ownerGrid = this.layoutGrid().owner as any;
   }
 
   private createContextMenu() {
@@ -1015,11 +805,7 @@ class TableTool {
       {
         icon: `${IC}<path d="M4.5 13L9 3l4.5 10"/><path d="M6 10h6"/><path d="M3 15.5h12" stroke="${A}" stroke-width="2"/></svg>`,
         label: t("editor.tools.table.textColor"),
-        action: () => {
-          const picker = this.createColorPicker("textColor");
-          document.body.appendChild(picker);
-          setTimeout(() => picker.click(), 100);
-        },
+        action: () => this.showColorPicker("textColor"),
       },
       { type: "separator" },
       // ── Text alignment ───────────────────────────────────────────────────────
@@ -1184,7 +970,7 @@ class TableTool {
       {
         icon: `${IC}<rect x="2.5" y="2.5" width="13" height="3.5" rx="0.5" fill="${A}" stroke="${A}"/><path d="M9 7.5v3M7 9.5l2 2 2-2" stroke="${A}"/><rect x="2.5" y="12" width="13" height="3.5" rx="0.5" stroke-dasharray="1.5 1.5"/></svg>`,
         label: () =>
-          this.data.repeatHeaderOnPrint !== false
+          this.data.repeatHeader !== false
             ? t("editor.tools.table.repeatHeaderOff", { defaultValue: "Stop repeating header" })
             : t("editor.tools.table.repeatHeaderOn", { defaultValue: "Repeat header on each page" }),
         action: () => this.toggleRepeatHeader(),
@@ -1297,157 +1083,7 @@ class TableTool {
       menu.appendChild(menuItem);
     });
 
-    // Linked table field: a distinct "Filled by" panel on top of the menu —
-    // who fills this table, and the way to change it.
-    /* "Filled by" owner chip removed with the CLM linked-field port. */
-
     return menu;
-  }
-
-  /* CLM linked-field owner helpers removed by the port — ownerUser() and
-   * createOwnerChip() depended on linkedUsers / linkedField / ownerName
-   * which no longer exist in this tool. */
-
-  /**
-   * Compact "who fills" pill at the END of the right-click menu (same height
-   * as the other options, so the menu stays two rows). Click → recipient
-   * popover right under it.
-   */
-  // Dead CLM-port stub left intentionally un-called.
-  // eslint-disable-next-line @typescript-eslint/no-unused-private-class-members
-  private _STRIPPED_createOwnerChip(): HTMLElement {
-    const u = this._STRIPPED_ownerUser();
-    const name = this._STRIPPED_ownerName();
-    // "Assigned to: [pill ▾]" — pinned to the bottom-right of the menu
-    // (last item + margin-left:auto on the wrapped row).
-    const wrap = document.createElement("div");
-    wrap.className = "te-linked-owner-chip";
-    Object.assign(wrap.style, {
-      display: "inline-flex",
-      alignItems: "center",
-      gap: "6px",
-      marginLeft: "auto",
-      padding: "3px 6px 3px 10px",
-      borderLeft: "1px solid #d1d5db",
-    });
-    const caption = document.createElement("span");
-    Object.assign(caption.style, {
-      fontSize: "12px",
-      color: "#475569",
-      whiteSpace: "nowrap",
-    });
-    caption.textContent = t("editor.tools.table.assignedTo", {
-      defaultValue: "Assigned to:",
-    });
-    const chip = document.createElement("div");
-    Object.assign(chip.style, {
-      display: "inline-flex",
-      alignItems: "center",
-      gap: "5px",
-      height: "24px",
-      padding: "0 6px 0 3px",
-      borderRadius: "12px",
-      border: `1px solid ${name ? "#93c5fd" : "#fcd34d"}`,
-      background: name ? "#eff6ff" : "#fffbeb",
-      cursor: "pointer",
-      fontSize: "12px",
-      maxWidth: "170px",
-      transition: "box-shadow 0.15s",
-    });
-    chip.addEventListener("mouseenter", () => (chip.style.boxShadow = "0 0 0 2px rgba(59,130,246,0.25)"));
-    chip.addEventListener("mouseleave", () => (chip.style.boxShadow = "none"));
-    const avatar = document.createElement("span");
-    Object.assign(avatar.style, {
-      width: "18px",
-      height: "18px",
-      borderRadius: "50%",
-      flexShrink: "0",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      fontSize: "9px",
-      fontWeight: "700",
-      color: "#fff",
-      background: name ? u?.color || "#2563eb" : "#f59e0b",
-    });
-    avatar.textContent = name
-      ? name
-          .split(/\s+/)
-          .map((p) => p[0])
-          .join("")
-          .slice(0, 2)
-          .toUpperCase()
-      : "?";
-    const label = document.createElement("span");
-    Object.assign(label.style, {
-      fontWeight: "600",
-      color: name ? "#1e3a8a" : "#92400e",
-      overflow: "hidden",
-      textOverflow: "ellipsis",
-      whiteSpace: "nowrap",
-    });
-    label.textContent =
-      name || t("editor.tools.table.notAssigned", { defaultValue: "Not assigned" });
-    const chevron = document.createElement("span");
-    chevron.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>`;
-    Object.assign(chevron.style, {
-      display: "flex",
-      flexShrink: "0",
-      color: name ? "#2563eb" : "#b45309",
-    });
-    chip.appendChild(avatar);
-    chip.appendChild(label);
-    chip.appendChild(chevron);
-    chip.setAttribute(
-      "aria-label",
-      `${t("editor.tools.table.whoFills", { defaultValue: "Who fills" })}: ${name || "—"}`,
-    );
-    chip.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const existing = document.querySelector(".te-linked-owner-list");
-      if (existing) {
-        existing.remove();
-        return;
-      }
-      const list = this._STRIPPED_buildOwnerList(() => {
-        list.remove();
-        this.hideContextMenu();
-      });
-      const r = chip.getBoundingClientRect();
-      Object.assign(list.style, {
-        position: "fixed",
-        top: `${r.bottom + 4}px`,
-        left: `${Math.max(8, Math.min(r.left, window.innerWidth - 240))}px`,
-        width: "230px",
-        zIndex: "100002",
-        margin: "0",
-        boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
-      });
-      // Title row so the popover says what it is.
-      const title = document.createElement("div");
-      Object.assign(title.style, {
-        padding: "4px 10px 6px",
-        fontSize: "10px",
-        fontWeight: "700",
-        letterSpacing: "0.5px",
-        textTransform: "uppercase",
-        color: "#6b7280",
-      });
-      title.textContent = `${t("editor.tools.table.whoFills", { defaultValue: "Who fills" })} · ${
-        this.data.linkedField.label || this.data.linkedField.field_key
-      }`;
-      list.insertBefore(title, list.firstChild);
-      document.body.appendChild(list);
-      const close = (ev: MouseEvent) => {
-        if (list.contains(ev.target as Node) || chip.contains(ev.target as Node)) return;
-        list.remove();
-        document.removeEventListener("mousedown", close, true);
-      };
-      setTimeout(() => document.addEventListener("mousedown", close, true), 0);
-    });
-    wrap.appendChild(caption);
-    wrap.appendChild(chip);
-    return wrap;
   }
 
   private openTablePropertiesPanel() {
@@ -1497,17 +1133,10 @@ class TableTool {
           this.setCellTextColor(color);
           break;
       }
-      picker.remove();
+      close();
     });
-
-    const closeHandler = (e: MouseEvent) => {
-      if (e.target !== picker) {
-        picker.remove();
-        document.removeEventListener("click", closeHandler);
-      }
-    };
-    document.addEventListener("click", closeHandler);
-
+    // Mounted (and torn down on destroy / outside click) via openFloating.
+    const close = this.openFloating(picker, { eventType: "click", delay: 0 });
     return picker;
   }
 
@@ -1520,8 +1149,9 @@ class TableTool {
       | "textColor",
   ) {
     const picker = this.createColorPicker(type);
-    document.body.appendChild(picker);
-    setTimeout(() => picker.click(), 100);
+    setTimeout(() => {
+      if (picker.isConnected) picker.click();
+    }, 100);
   }
 
   private showBorderStylePicker() {
@@ -1534,6 +1164,7 @@ class TableTool {
     ];
 
     const menu = document.createElement("div");
+    let closeMenu: () => void = () => menu.remove();
     menu.style.cssText = `
       position: fixed;
       z-index: 100000;
@@ -1608,14 +1239,14 @@ class TableTool {
       item.addEventListener("click", (e) => {
         e.stopPropagation();
         this.setBorderStyle(value);
-        menu.remove();
+        closeMenu();
         this.hideContextMenu();
       });
 
       menu.appendChild(item);
     });
 
-    document.body.appendChild(menu);
+    closeMenu = this.openFloating(menu);
 
     // Position using fixed coords — find the Border Style trigger item in context menu
     let anchorRect: DOMRect | null = null;
@@ -1652,13 +1283,6 @@ class TableTool {
       menu.style.top = `${window.innerHeight / 2 - menuHeight / 2}px`;
     }
 
-    const closeHandler = (e: MouseEvent) => {
-      if (!menu.contains(e.target as Node)) {
-        menu.remove();
-        document.removeEventListener("mousedown", closeHandler);
-      }
-    };
-    setTimeout(() => document.addEventListener("mousedown", closeHandler), 10);
   }
 
   private attachEventListeners() {
@@ -1666,9 +1290,9 @@ class TableTool {
 
     this.table.addEventListener("contextmenu", (e: any) => {
       if (this.readOnly) return;
-      e.preventDefault();
-      const cell = (e.target as HTMLElement).closest("td, th");
+      const cell = this.ownCellFrom(e.target);
       if (!cell) return;
+      e.preventDefault();
 
       this.selectedCell = cell as HTMLTableCellElement;
       this.selectedRow = cell.parentElement as HTMLTableRowElement;
@@ -1707,12 +1331,17 @@ class TableTool {
       this.wrapper.appendChild(this.contextMenu);
     });
 
-    document.addEventListener("click", this.handleDocumentClick.bind(this));
+    // Document listeners are per tool, not per table element: add once.
+    if (!this.docListenersAttached) {
+      document.addEventListener("click", this.onDocumentClick);
+      document.addEventListener("mouseup", this.onDocumentMouseUp);
+      this.docListenersAttached = true;
+    }
 
     this.table.addEventListener("mousedown", (e: MouseEvent) => {
       if (e.button !== 0 || this.readOnly) return;
 
-      const cell: any = (e.target as HTMLElement).closest("td, th");
+      const cell: any = this.ownCellFrom(e.target);
       if (cell) {
         if (e.shiftKey && this.selectionStart) {
           this.selectionEnd = cell as HTMLTableCellElement;
@@ -1723,6 +1352,7 @@ class TableTool {
           this.finalizeSelection();
         } else {
           this.clearSelection();
+          this.selectionEnd = null;
           this.selectionStart = cell as HTMLTableCellElement;
           this.selectionStartRow = cell.parentElement!.rowIndex;
           this.selectionStartCol = parseInt(cell.dataset.logicalStartCol!);
@@ -1734,7 +1364,7 @@ class TableTool {
 
     this.table.addEventListener("mousemove", (e: MouseEvent) => {
       if (this.isSelecting && this.selectionStart) {
-        const cell: any = (e.target as HTMLElement).closest("td, th");
+        const cell: any = this.ownCellFrom(e.target);
         if (cell) {
           this.selectionEnd = cell as HTMLTableCellElement;
           this.selectionEndRow = cell.parentElement!.rowIndex;
@@ -1745,22 +1375,10 @@ class TableTool {
       }
     });
 
-    document.addEventListener("mouseup", () => {
-      if (this.isSelecting) {
-        this.isSelecting = false;
-        if (!this.selectionEnd) {
-          this.selectionEnd = this.selectionStart;
-          this.selectionEndRow = this.selectionStartRow;
-          this.selectionEndCol = this.selectionStartCol;
-          this.selectionEndEndCol = this.selectionStartEndCol;
-        }
-        this.finalizeSelection();
-      }
-    });
 
     this.table.addEventListener("keydown", (e: KeyboardEvent) => {
-      const cell = e.target as HTMLElement;
-      if (cell.tagName !== "TD" && cell.tagName !== "TH") return;
+      const cell = this.ownCellFrom(e.target);
+      if (!cell || e.target !== cell) return;
 
       if (e.key === "Enter") {
         if (e.shiftKey) {
@@ -1768,10 +1386,13 @@ class TableTool {
           document.execCommand("insertLineBreak");
         } else {
           const row: any = cell.parentElement;
-          if (row && row.rowIndex === this.table!.rows.length - 1) {
+          const rowIdx = row ? row.rowIndex : -1;
+          if (row && rowIdx === this.table!.rows.length - 1) {
             e.preventDefault();
+            this.selectedRow = row;
+            this.selectedCell = cell;
             this.insertRow("below");
-            const newRow = this.table!.rows[row.rowIndex + 1];
+            const newRow = this.table!.rows[rowIdx + 1];
             if (newRow && newRow.cells[0]) {
               newRow.cells[0].focus();
             }
@@ -1782,7 +1403,7 @@ class TableTool {
   }
 
   private highlightCells() {
-    Array.from(this.table.querySelectorAll("td, th")).forEach((c: any) =>
+    Array.from(this.ownCells()).forEach((c: any) =>
       c.classList.remove(this.CSS.selecting),
     );
     if (!this.selectionStart || !this.selectionEnd) return;
@@ -1790,7 +1411,7 @@ class TableTool {
     const maxRow = Math.max(this.selectionStartRow, this.selectionEndRow);
     const minCol = Math.min(this.selectionStartCol, this.selectionEndCol);
     const maxCol = Math.max(this.selectionStartEndCol, this.selectionEndEndCol);
-    Array.from(this.table.querySelectorAll("td, th")).forEach((cell: any) => {
+    Array.from(this.ownCells()).forEach((cell: any) => {
       const row = cell.parentElement.rowIndex;
       const startCol = parseInt(cell.dataset.logicalStartCol!);
       const endCol = parseInt(cell.dataset.logicalEndCol!);
@@ -1823,7 +1444,7 @@ class TableTool {
   }
 
   private clearSelection() {
-    Array.from(this.table.querySelectorAll("td, th")).forEach((c: any) =>
+    Array.from(this.ownCells()).forEach((c: any) =>
       c.classList.remove(this.CSS.selected),
     );
     this.selectedMinRow = undefined;
@@ -1839,7 +1460,6 @@ class TableTool {
   }
 
   private hideContextMenu() {
-    document.querySelector(".te-linked-owner-list")?.remove();
     this.contextMenu?.remove();
     this.contextMenu = null;
   }
@@ -1855,7 +1475,7 @@ class TableTool {
       const maxRow = this.selectedMaxRow!;
       const minCol = this.selectedMinCol!;
       const maxCol = this.selectedMaxCol!;
-      Array.from(this.table.querySelectorAll("td, th")).forEach((cell: any) => {
+      Array.from(this.ownCells()).forEach((cell: any) => {
         const row = cell.parentElement.rowIndex;
         const startCol = parseInt(cell.dataset.logicalStartCol!);
         const endCol = parseInt(cell.dataset.logicalEndCol!);
@@ -1910,7 +1530,7 @@ class TableTool {
       const maxRow = this.selectedMaxRow!;
       const minCol = this.selectedMinCol!;
       const maxCol = this.selectedMaxCol!;
-      Array.from(this.table.querySelectorAll("td, th")).forEach((cell: any) => {
+      Array.from(this.ownCells()).forEach((cell: any) => {
         const row = cell.parentElement.rowIndex;
         const startCol = parseInt(cell.dataset.logicalStartCol!);
         const endCol = parseInt(cell.dataset.logicalEndCol!);
@@ -1951,7 +1571,7 @@ class TableTool {
       const maxRow = this.selectedMaxRow!;
       const minCol = this.selectedMinCol!;
       const maxCol = this.selectedMaxCol!;
-      Array.from(this.table.querySelectorAll("td, th")).forEach((cell: any) => {
+      Array.from(this.ownCells()).forEach((cell: any) => {
         const row = cell.parentElement.rowIndex;
         const startCol = parseInt(cell.dataset.logicalStartCol!);
         const endCol = parseInt(cell.dataset.logicalEndCol!);
@@ -1969,57 +1589,30 @@ class TableTool {
     this.updateData();
   }
 
+  /**
+   * Header rows are a run at the top of the table (Word's model — only
+   * those can repeat on each page). Turning the header on for row r makes
+   * rows 0..r headers; turning it off for row r keeps rows 0..r-1.
+   * (A stray header row further down in legacy data toggles on its own.)
+   */
   private toggleHeader() {
     if (!this.selectedRow) return;
-
-    const rowIndex = this.selectedRow.rowIndex;
-    const isHeader = !this.selectedRow.classList.contains(this.CSS.header);
-
-    if (isHeader) {
-      this.selectedRow.classList.add(this.CSS.header);
+    const r = this.selectedRow.rowIndex;
+    const prefix = this.headerPrefixCount();
+    const isHeader = this.selectedRow.classList.contains(this.CSS.header);
+    this.updateData();
+    let next: number[];
+    if (isHeader && r >= prefix) {
+      next = this.data.headerRows.filter((i: number) => i !== r);
     } else {
-      this.selectedRow.classList.remove(this.CSS.header);
+      const count = isHeader ? r : r + 1;
+      next = Array.from({ length: count }, (_, i) => i);
     }
-
-    Array.from(this.selectedRow.cells).forEach((cell: any) => {
-      const cellContent = cell.innerHTML;
-      const cellStyles = cell.style.cssText;
-      const newCell = isHeader
-        ? document.createElement("th")
-        : document.createElement("td");
-
-      newCell.innerHTML = cellContent;
-      newCell.style.cssText = cellStyles;
-      newCell.classList.add(this.CSS.cell);
-      newCell.contentEditable = this.cellsEditable ? "true" : "false";
-      newCell.dataset.logicalStartCol = cell.dataset.logicalStartCol;
-      newCell.dataset.logicalEndCol = cell.dataset.logicalEndCol;
-      if (cell.colSpan > 1) newCell.colSpan = cell.colSpan;
-      if (cell.rowSpan > 1) newCell.rowSpan = cell.rowSpan;
-
-      newCell.style.whiteSpace = "pre-wrap";
-      newCell.style.wordBreak = "break-word";
-      newCell.style.overflowWrap = "break-word";
-
-      cell.replaceWith(newCell);
-    });
-
-    if (!this.data.headerRows) {
-      this.data.headerRows = [];
-    }
-
-    if (isHeader) {
-      if (!this.data.headerRows.includes(rowIndex)) {
-        this.data.headerRows.push(rowIndex);
-      }
-    } else {
-      this.data.headerRows = this.data.headerRows.filter(
-        (idx: number) => idx !== rowIndex,
-      );
-    }
-
-    this.data.withHeading = this.data.headerRows.length > 0;
-
+    this.data.headerRows = next;
+    this.data.withHeading = next.length > 0;
+    this.selectedCell = null;
+    this.selectedRow = null;
+    this.rebuildTable();
     this.updateData();
   }
 
@@ -2034,7 +1627,7 @@ class TableTool {
       const maxRow = this.selectedMaxRow!;
       const minCol = this.selectedMinCol!;
       const maxCol = this.selectedMaxCol!;
-      Array.from(this.table.querySelectorAll("td, th")).forEach((cell: any) => {
+      Array.from(this.ownCells()).forEach((cell: any) => {
         const row = cell.parentElement.rowIndex;
         const startCol = parseInt(cell.dataset.logicalStartCol!);
         const endCol = parseInt(cell.dataset.logicalEndCol!);
@@ -2068,7 +1661,7 @@ class TableTool {
     }
 
     // Always force-apply to every cell regardless of individual overrides
-    Array.from(this.table.querySelectorAll("td, th")).forEach((cell: any) => {
+    Array.from(this.ownCells()).forEach((cell: any) => {
       if (hide) {
         cell.style.borderWidth = "0";
         cell.style.borderStyle = "none";
@@ -2092,12 +1685,13 @@ class TableTool {
     fileInput.type = "file";
     fileInput.accept = "image/*";
     fileInput.style.display = "none";
-    document.body.appendChild(fileInput);
+    // Tracked so a cancelled picker / destroyed block doesn't leave it.
+    const closeInput = this.openFloating(fileInput);
 
     fileInput.addEventListener("change", () => {
       const file = fileInput.files?.[0];
       if (!file) {
-        fileInput.remove();
+        closeInput();
         return;
       }
       const reader = new FileReader();
@@ -2128,7 +1722,7 @@ class TableTool {
         // (pageHeaders/pageFooters) is never notified, causing images to be lost on reload.
         targetCell.dispatchEvent(new Event("input", { bubbles: true }));
 
-        fileInput.remove();
+        closeInput();
       };
       reader.readAsDataURL(file);
     });
@@ -2231,10 +1825,16 @@ class TableTool {
 
     if (!topLeft) return;
 
-    const contents = Array.from(cellSet)
-      .map((cell) => cell.innerHTML)
-      .join(" ");
-    topLeft.cell.innerHTML = contents;
+    // Keep each merged cell's content (non-empty ones, row-major, one per
+    // line). Only the top-left cell keeps its stored image.
+    const parts = Array.from(cellSet)
+      .map((cell) => this.serializeCell(cell))
+      .filter((html) => html.replace(/<br\s*\/?>|&nbsp;|\s|​/gi, "") !== "");
+    const image = topLeft.cell.querySelector("[data-cell-image]");
+    topLeft.cell.innerHTML = parts.join("<br>");
+    if (image) topLeft.cell.insertBefore(image, topLeft.cell.firstChild);
+    delete topLeft.cell.dataset.formula;
+    delete topLeft.cell.dataset.formulaDisplayed;
 
     topLeft.cell.rowSpan = maxRow - minRow + 1;
     topLeft.cell.colSpan = maxCol - minCol + 1;
@@ -2245,9 +1845,27 @@ class TableTool {
       }
     });
 
-    this.assignLogicalCols();
-    this.updateData();
     this.clearSelection();
+    this.commitStructure();
+  }
+
+  /** Persist a structural DOM edit and re-render from the saved data, so
+   *  the DOM is always exactly what a reload would produce (and every new
+   *  cell gets the full set of listeners). */
+  private commitStructure() {
+    this.updateData();
+    this.selectedCell = null;
+    this.selectedRow = null;
+    this.rebuildTable();
+  }
+
+  /** A fresh empty cell for a structural insert. Styling comes from the
+   *  table defaults when the table is re-rendered. */
+  private makeEmptyCell(header: boolean): HTMLTableCellElement {
+    const cell = document.createElement(header ? "th" : "td");
+    cell.classList.add(this.CSS.cell);
+    cell.contentEditable = this.cellsEditable ? "true" : "false";
+    return cell;
   }
 
   private splitCell() {
@@ -2272,9 +1890,10 @@ class TableTool {
       return;
     }
 
+    this.assignLogicalCols();
     const startRow = cell.parentElement!.rowIndex;
     const startCol = parseInt(cell.dataset.logicalStartCol!);
-    const endRow = startRow + rowSpan - 1;
+    const endRow = Math.min(startRow + rowSpan - 1, this.table.rows.length - 1);
     const endCol = startCol + colSpan - 1;
 
     cell.rowSpan = 1;
@@ -2284,240 +1903,182 @@ class TableTool {
       const row = this.table.rows[r];
       for (let c = startCol; c <= endCol; c++) {
         if (r === startRow && c === startCol) continue;
-
-        const newCell = document.createElement(
-          row.classList.contains(this.CSS.header) ? "th" : "td",
-        );
-        newCell.classList.add(this.CSS.cell);
-        newCell.contentEditable = this.cellsEditable ? "true" : "false";
-        newCell.innerHTML = "";
-        if (this.data.hideBorders) {
-          newCell.style.borderWidth = "0";
-          newCell.style.borderStyle = "none";
-          newCell.style.borderColor = "transparent";
-        } else {
-          newCell.style.borderWidth = this.data.styles.table.borderWidth;
-          newCell.style.borderStyle = this.data.styles.table.borderStyle;
-          newCell.style.borderColor = this.data.styles.table.borderColor;
-        }
-        newCell.style.wordBreak = "break-word";
-        newCell.style.whiteSpace = "pre-wrap";
-        newCell.style.overflowWrap = "break-word";
-
-        let insertBefore: HTMLTableCellElement | null = null;
-        Array.from(row.cells).forEach((existing: HTMLTableCellElement) => {
-          const exC = parseInt(existing.dataset.logicalStartCol!);
-          if (exC >= c && !insertBefore) {
-            insertBefore = existing;
-          }
-        });
-        row.insertBefore(newCell, insertBefore);
+        const newCell = this.makeEmptyCell(row.classList.contains(this.CSS.header));
+        newCell.dataset.logicalStartCol = String(c);
+        newCell.dataset.logicalEndCol = String(c);
+        const before =
+          (Array.from(row.cells) as HTMLTableCellElement[]).find(
+            (existing) =>
+              existing !== newCell &&
+              parseInt(existing.dataset.logicalStartCol!) > c,
+          ) || null;
+        row.insertBefore(newCell, before);
       }
     }
 
-    this.assignLogicalCols();
-    this.updateData();
+    this.commitStructure();
   }
 
+  /**
+   * Insert an empty row above / below the selection. A cell merged down
+   * across the insertion point grows by one row instead of getting a new
+   * cell beside it, so every row keeps the same logical width.
+   */
   private insertRow(position: "above" | "below"): void {
     if (!this.selectedRow || !this.table) return;
+    const rows = this.table.rows;
+    const { owner, numCols } = this.layoutGrid();
 
-    const newRow = document.createElement("tr");
-    newRow.classList.add(this.CSS.row);
-    const cellCount = this.getNumCols();
-
-    for (let i = 0; i < cellCount; i++) {
-      const cell = document.createElement(
-        this.selectedRow.classList.contains(this.CSS.header) ? "th" : "td",
-      );
-      cell.classList.add(this.CSS.cell);
-      cell.contentEditable = "true";
-
-      if (this.data.hideBorders) {
-        cell.style.borderWidth = "0";
-        cell.style.borderStyle = "none";
-        cell.style.borderColor = "transparent";
-      } else {
-        cell.style.borderWidth = this.data.styles.table.borderWidth;
-        cell.style.borderStyle = this.data.styles.table.borderStyle;
-        cell.style.borderColor = this.data.styles.table.borderColor;
-      }
-      cell.style.wordBreak = "break-word";
-      cell.style.whiteSpace = "pre-wrap";
-      cell.style.overflowWrap = "break-word";
-
-      newRow.appendChild(cell);
-      cell.addEventListener("input", () => {
-        const rowIndex = newRow.rowIndex;
-        const colIndex = cell.cellIndex;
-        this.data.content[rowIndex][colIndex] = cell.innerHTML;
-        this.updateData();
-      });
-    }
-
-    if (position === "above") {
-      this.selectedRow.before(newRow);
-    } else {
-      this.selectedRow.after(newRow);
-    }
-
-    if (position === "above" && this.data.headerRows) {
-      this.data.headerRows = this.data.headerRows.map((idx: number) =>
-        idx >= this.selectedRow.rowIndex ? idx + 1 : idx,
-      );
-    }
-
-    // Shift cell image keys for the new row
-    const insertedRowIndex =
+    let at =
       position === "above"
         ? this.selectedRow.rowIndex
         : this.selectedRow.rowIndex + 1;
-    this.shiftCellImageKeys("insertRow", insertedRowIndex);
-
-    // Shift stored row heights so later rows keep their explicit height
-    // after the insert. New row has no stored height → auto-sizes.
-    if (this.data.rowHeights && this.data.rowHeights.length > 0) {
-      this.data.rowHeights.splice(insertedRowIndex, 0, 0);
+    // A selected cell merged down several rows: go past its last row.
+    const sel = this.selectedCell as HTMLTableCellElement | null;
+    if (sel && sel.parentElement === this.selectedRow && position === "below") {
+      at = Math.min(rows.length, this.selectedRow.rowIndex + (sel.rowSpan || 1));
     }
 
-    this.assignLogicalCols();
-    this.updateData();
+    // Header rows stay a contiguous run at the top.
+    const isHeader = at < this.headerPrefixCount();
+    const newRow = document.createElement("tr");
+    newRow.classList.add(this.CSS.row);
+    if (isHeader) newRow.classList.add(this.CSS.header);
+
+    const grown = new Set<HTMLTableCellElement>();
+    for (let c = 0; c < numCols; c++) {
+      const above = at > 0 ? owner[at - 1]?.[c] : null;
+      const below = at < rows.length ? owner[at]?.[c] : null;
+      if (above && below && above.cell === below.cell) {
+        if (!grown.has(above.cell)) {
+          above.cell.rowSpan = (above.cell.rowSpan || 1) + 1;
+          grown.add(above.cell);
+        }
+        continue;
+      }
+      newRow.appendChild(this.makeEmptyCell(isHeader));
+    }
+
+    if (at < rows.length) rows[at].before(newRow);
+    else rows[rows.length - 1].after(newRow);
+
+    this.commitStructure();
   }
 
+  /**
+   * Insert an empty column left / right of the selected cell (right of
+   * its LAST column when it is merged across several). A cell merged
+   * across the insertion point widens instead.
+   */
   private insertColumn(position: "left" | "right"): void {
     if (!this.selectedCell || !this.table) return;
+    const { owner, numCols } = this.layoutGrid();
+    const startCol = parseInt(this.selectedCell.dataset.logicalStartCol || "0");
+    const endCol = parseInt(this.selectedCell.dataset.logicalEndCol || String(startCol));
+    const at = position === "left" ? startCol : endCol + 1;
 
-    const logicalCol = parseInt(this.selectedCell.dataset.logicalStartCol!);
-
-    const rows = this.table.rows;
-
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      const newCell = document.createElement(
-        row.classList.contains(this.CSS.header) ? "th" : "td",
-      );
-      newCell.classList.add(this.CSS.cell);
-      newCell.contentEditable = "true";
-
-      if (this.data.hideBorders) {
-        newCell.style.borderWidth = "0";
-        newCell.style.borderStyle = "none";
-        newCell.style.borderColor = "transparent";
-      } else {
-        newCell.style.borderWidth = this.data.styles.table.borderWidth;
-        newCell.style.borderStyle = this.data.styles.table.borderStyle;
-        newCell.style.borderColor = this.data.styles.table.borderColor;
-      }
-      newCell.style.wordBreak = "break-word";
-      newCell.style.whiteSpace = "pre-wrap";
-      newCell.style.overflowWrap = "break-word";
-
-      newCell.addEventListener("input", () => {
-        const rowIndex = row.rowIndex;
-        const colIndex = newCell.cellIndex;
-        this.data.content[rowIndex][colIndex] = newCell.innerHTML;
-        this.updateData();
-      });
-
-      let insertBefore: HTMLTableCellElement | null = null;
-      Array.from(row.cells).forEach((cell: HTMLTableCellElement) => {
-        const startCol = parseInt(cell.dataset.logicalStartCol!);
-        if (
-          (position === "left" && startCol >= logicalCol) ||
-          (position === "right" && startCol >= logicalCol + 1)
-        ) {
-          if (!insertBefore) insertBefore = cell;
+    const grown = new Set<HTMLTableCellElement>();
+    Array.from(this.table.rows).forEach((row: HTMLTableRowElement, i: number) => {
+      const left = at > 0 ? owner[i]?.[at - 1] : null;
+      const right = at < numCols ? owner[i]?.[at] : null;
+      if (left && right && left.cell === right.cell) {
+        if (!grown.has(left.cell)) {
+          left.cell.colSpan = (left.cell.colSpan || 1) + 1;
+          grown.add(left.cell);
         }
-      });
-      row.insertBefore(newCell, insertBefore);
-    }
-
-    // Update column widths array
-    if (this.data.columnWidths && this.data.columnWidths.length > 0) {
-      const insertIdx = position === "left" ? logicalCol : logicalCol + 1;
-      const splitWidth =
-        (this.data.columnWidths[logicalCol] ??
-          100 / this.data.columnWidths.length) / 2;
-      this.data.columnWidths[logicalCol] = splitWidth;
-      this.data.columnWidths.splice(insertIdx, 0, splitWidth);
-      const total = this.data.columnWidths.reduce((s, w) => s + w, 0);
-      this.data.columnWidths = this.data.columnWidths.map(
-        (w) => (w / total) * 100,
+        return;
+      }
+      const before =
+        (Array.from(row.cells) as HTMLTableCellElement[]).find(
+          (c) => parseInt(c.dataset.logicalStartCol || "0") >= at,
+        ) || null;
+      row.insertBefore(
+        this.makeEmptyCell(row.classList.contains(this.CSS.header)),
+        before,
       );
+    });
+
+    // Split the neighbouring column's width with the new one.
+    const widths = this.data.columnWidths;
+    if (widths && widths.length === numCols) {
+      const src = position === "left" ? startCol : endCol;
+      const half = (widths[src] ?? 100 / numCols) / 2;
+      widths[src] = half;
+      widths.splice(at, 0, half);
     }
 
-    // Shift cell image keys for the inserted column
-    const insertedColIdx = position === "left" ? logicalCol : logicalCol + 1;
-    this.shiftCellImageKeys("insertCol", insertedColIdx);
-
-    this.assignLogicalCols();
-    this.applyColumnWidths();
-    this.updateData();
+    this.commitStructure();
   }
 
+  /**
+   * Delete the selected row. Cells merged down INTO it from above shrink
+   * by one row; a cell merged down FROM it moves (content and all) to the
+   * next row with one row less — so the grid stays rectangular.
+   */
   private deleteRow() {
-    if (!this.selectedRow) return;
-    const rowIndex = this.selectedRow.rowIndex;
-    this.shiftCellImageKeys("deleteRow", rowIndex);
+    if (!this.selectedRow || !this.table) return;
+    const rows = this.table.rows;
+    if (rows.length <= 1) {
+      failedPopper(
+        t("editor.tools.table.deleteLastRow", {
+          defaultValue: "A table needs at least one row — delete the table block instead.",
+        }),
+      );
+      return;
+    }
+    const r = this.selectedRow.rowIndex;
+    const { owner, numCols } = this.layoutGrid();
+    const handled = new Set<HTMLTableCellElement>();
+    for (let c = 0; c < numCols; c++) {
+      const o = owner[r]?.[c];
+      if (!o || handled.has(o.cell)) continue;
+      handled.add(o.cell);
+      const span = o.cell.rowSpan || 1;
+      if (o.startRow < r) {
+        o.cell.rowSpan = span - 1;
+      } else if (span > 1 && r + 1 < rows.length) {
+        const next = rows[r + 1];
+        const before =
+          (Array.from(next.cells) as HTMLTableCellElement[]).find(
+            (x) => parseInt(x.dataset.logicalStartCol || "0") > o.startCol,
+          ) || null;
+        o.cell.rowSpan = span - 1;
+        next.insertBefore(o.cell, before);
+      }
+    }
     this.selectedRow.remove();
-    this.selectedCell = null;
-    this.selectedRow = null;
-
-    if (this.data.headerRows) {
-      this.data.headerRows = this.data.headerRows
-        .filter((idx: number) => idx !== rowIndex)
-        .map((idx: number) => (idx > rowIndex ? idx - 1 : idx));
-    }
-
-    // Drop the deleted row's stored height so later rows still line up
-    // with their saved sizes.
-    if (this.data.rowHeights && this.data.rowHeights.length > rowIndex) {
-      this.data.rowHeights.splice(rowIndex, 1);
-    }
-
-    this.assignLogicalCols();
-    this.updateData();
+    this.commitStructure();
   }
 
   private deleteColumn(): void {
     if (!this.selectedCell || !this.table) return;
+    const { owner, numCols } = this.layoutGrid();
+    if (numCols <= 1) {
+      failedPopper(
+        t("editor.tools.table.deleteLastColumn", {
+          defaultValue: "A table needs at least one column — delete the table block instead.",
+        }),
+      );
+      return;
+    }
+    const col = parseInt(this.selectedCell.dataset.logicalStartCol || "0");
+    const handled = new Set<HTMLTableCellElement>();
+    owner.forEach((row) => {
+      const o = row[col];
+      if (!o || handled.has(o.cell)) return;
+      handled.add(o.cell);
+      if ((o.cell.colSpan || 1) > 1) o.cell.colSpan -= 1;
+      else o.cell.remove();
+    });
 
-    const logicalCol = parseInt(this.selectedCell.dataset.logicalStartCol!);
-
-    const rows = this.table.rows;
-
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      Array.from(row.cells).forEach((cell: HTMLTableCellElement) => {
-        const startCol = parseInt(cell.dataset.logicalStartCol!);
-        const endCol = parseInt(cell.dataset.logicalEndCol!);
-        if (startCol <= logicalCol && endCol >= logicalCol) {
-          if (cell.colSpan > 1) {
-            cell.colSpan -= 1;
-          } else {
-            cell.remove();
-          }
-        }
-      });
+    const widths = this.data.columnWidths;
+    if (widths && widths.length === numCols) {
+      widths.splice(col, 1);
+      const total = widths.reduce((s: number, w: number) => s + w, 0) || 1;
+      this.data.columnWidths = widths.map((w: number) => (w / total) * 100);
     }
 
-    this.selectedCell = null;
-    this.shiftCellImageKeys("deleteCol", logicalCol);
-
-    // Update column widths array
-    if (this.data.columnWidths && this.data.columnWidths.length > logicalCol) {
-      this.data.columnWidths.splice(logicalCol, 1);
-      if (this.data.columnWidths.length > 0) {
-        const total = this.data.columnWidths.reduce((s, w) => s + w, 0);
-        this.data.columnWidths = this.data.columnWidths.map(
-          (w) => (w / total) * 100,
-        );
-      }
-    }
-
-    this.assignLogicalCols();
-    this.applyColumnWidths();
-    this.updateData();
+    this.commitStructure();
   }
 
   private updateCellStyles(cell?: HTMLTableCellElement) {
@@ -2562,40 +2123,6 @@ class TableTool {
     };
 
     this.updateData();
-  }
-
-  private shiftCellImageKeys(
-    type: "insertRow" | "deleteRow" | "insertCol" | "deleteCol",
-    index: number,
-  ) {
-    const shiftMap = (
-      source: { [key: string]: any } | undefined,
-    ): { [key: string]: any } => {
-      const next: { [key: string]: any } = {};
-      if (!source || Object.keys(source).length === 0) return next;
-      for (const [key, val] of Object.entries(source)) {
-        const [r, c] = key.split("-").map(Number);
-        if (type === "insertRow") {
-          if (r < index) next[key] = val;
-          else next[`${r + 1}-${c}`] = val;
-        } else if (type === "deleteRow") {
-          if (r < index) next[key] = val;
-          else if (r > index) next[`${r - 1}-${c}`] = val;
-          // r === index → deleted
-        } else if (type === "insertCol") {
-          if (c < index) next[key] = val;
-          else next[`${r}-${c + 1}`] = val;
-        } else if (type === "deleteCol") {
-          if (c < index) next[key] = val;
-          else if (c > index) next[`${r}-${c - 1}`] = val;
-          // c === index → deleted
-        }
-      }
-      return next;
-    };
-
-    this.data.cellImages = shiftMap(this.data.cellImages);
-    this.data.cellImageSizes = shiftMap(this.data.cellImageSizes);
   }
 
   private injectCellImage(
@@ -2978,7 +2505,7 @@ class TableTool {
       const maxRow = this.selectedMaxRow!;
       const minCol = this.selectedMinCol!;
       const maxCol = this.selectedMaxCol!;
-      Array.from(this.table.querySelectorAll("td, th")).forEach((cell: any) => {
+      Array.from(this.ownCells()).forEach((cell: any) => {
         const row = cell.parentElement.rowIndex;
         const startCol = parseInt(cell.dataset.logicalStartCol!);
         const endCol = parseInt(cell.dataset.logicalEndCol!);
@@ -3008,7 +2535,7 @@ class TableTool {
       const maxRow = this.selectedMaxRow!;
       const minCol = this.selectedMinCol!;
       const maxCol = this.selectedMaxCol!;
-      Array.from(this.table.querySelectorAll("td, th")).forEach((cell: any) => {
+      Array.from(this.ownCells()).forEach((cell: any) => {
         const row = cell.parentElement.rowIndex;
         const startCol = parseInt(cell.dataset.logicalStartCol!);
         const endCol = parseInt(cell.dataset.logicalEndCol!);
@@ -3047,62 +2574,15 @@ class TableTool {
       },
     ];
 
-    const menu = document.createElement("div");
-    menu.style.cssText = `position:absolute;z-index:1001;background:#f0f0f0;border:1px solid #d1d5db;box-shadow:0 2px 5px rgba(0,0,0,0.2);border-radius:4px;padding:4px 0;display:flex;flex-direction:column;min-width:130px;`;
-
-    if (this.contextMenu) {
-      const menuItems = this.contextMenu.querySelectorAll(
-        `.${this.CSS.contextMenuItem}`,
-      );
-      let vAlignItem: HTMLElement | null = null;
-      menuItems.forEach((item: Element) => {
-        if ((item as HTMLElement).dataset.action === "verticalAlign") {
-          vAlignItem = item as HTMLElement;
-        }
-      });
-      if (vAlignItem) {
-        const itemRect = (vAlignItem as HTMLElement).getBoundingClientRect();
-        const wrapperRect = this.wrapper.getBoundingClientRect();
-        const spaceRight = window.innerWidth - itemRect.right;
-        if (spaceRight >= 130) {
-          menu.style.left = `${itemRect.right - wrapperRect.left + 4}px`;
-          menu.style.top = `${itemRect.top - wrapperRect.top}px`;
-        } else {
-          menu.style.right = `${wrapperRect.right - itemRect.left + 4}px`;
-          menu.style.top = `${itemRect.top - wrapperRect.top}px`;
-        }
-      }
-    }
-
-    aligns.forEach(({ label, value, icon }) => {
-      const item = document.createElement("div");
-      item.style.cssText = `display:flex;align-items:center;gap:6px;padding:5px 10px;cursor:pointer;font-size:12px;white-space:nowrap;`;
-      item.innerHTML = `${icon}<span>${label}</span>`;
-      item.addEventListener("mouseenter", () => {
-        item.style.backgroundColor = "#e5e7eb";
-      });
-      item.addEventListener("mouseleave", () => {
-        item.style.backgroundColor = "transparent";
-      });
-      item.addEventListener("click", () => {
-        this.setVerticalAlignment(value);
-        menu.remove();
-        this.hideContextMenu();
-      });
-      menu.appendChild(item);
+    this.showAnchoredSubmenu({
+      action: "verticalAlign",
+      minWidth: 140,
+      items: aligns.map(({ label, value, icon }) => ({
+        label,
+        iconSvg: icon,
+        onPick: () => this.setVerticalAlignment(value),
+      })),
     });
-
-    this.wrapper.appendChild(menu);
-
-    const closeHandler = (e: MouseEvent) => {
-      if (!menu.contains(e.target as Node)) {
-        menu.remove();
-        document.removeEventListener("click", closeHandler);
-      }
-    };
-    setTimeout(() => {
-      document.addEventListener("click", closeHandler);
-    }, 10);
   }
 
   private applyTableStyles() {
@@ -3128,7 +2608,9 @@ class TableTool {
       col.style.width = `${w}%`;
       colgroup.appendChild(col);
     });
-    this.table.insertBefore(colgroup, this.table.firstChild);
+    // After <caption> (which must stay the table's first child).
+    const caption = this.table.querySelector(":scope > caption");
+    this.table.insertBefore(colgroup, caption ? caption.nextSibling : this.table.firstChild);
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -3289,7 +2771,10 @@ class TableTool {
   ) {
     const t = this.data.styles.table;
     const borderShorthand = `${t.borderWidth || "1px"} ${t.borderStyle || "solid"} ${t.borderColor || "#d1d5db"}`;
-    const cleared = "none";
+    // A zero-width transparent side: renders like `none` in a collapsed
+    // table (the neighbour's border still wins) and, unlike `none`,
+    // survives every CSSOM implementation's per-side shorthand parsing.
+    const cleared = "0px solid transparent";
 
     const selRow = (this.selectedCell?.parentElement as HTMLTableRowElement | null)?.rowIndex ?? 0;
     const minRow = this.selectedMinRow ?? selRow;
@@ -3467,13 +2952,8 @@ class TableTool {
     actions.appendChild(applyBtn);
     popup.appendChild(actions);
 
-    const closePopup = () => {
-      popup.remove();
-      document.removeEventListener("mousedown", onDocClick);
-    };
-    const onDocClick = (e: MouseEvent) => {
-      if (!popup.contains(e.target as Node)) closePopup();
-    };
+    // Replaced by openFloating's close() once mounted below.
+    let closePopup: () => void = () => popup.remove();
 
     cancelBtn.addEventListener("click", closePopup);
     applyBtn.addEventListener("click", () => {
@@ -3485,7 +2965,7 @@ class TableTool {
       closePopup();
     });
 
-    document.body.appendChild(popup);
+    closePopup = this.openFloating(popup);
 
     // Position relative to the Cell Padding menu entry
     let anchorRect: DOMRect | null = null;
@@ -3513,7 +2993,6 @@ class TableTool {
       popup.style.top = `${(window.innerHeight - h) / 2}px`;
     }
 
-    setTimeout(() => document.addEventListener("mousedown", onDocClick), 10);
     inputs.top.focus();
     inputs.top.select();
   }
@@ -3616,6 +3095,7 @@ class TableTool {
     }[];
   }) {
     const menu = document.createElement("div");
+    let closeMenu: () => void = () => menu.remove();
     menu.style.cssText = `
       position:fixed;z-index:100000;background:#ffffff;border:1px solid #d1d5db;
       border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,0.18);padding:4px;
@@ -3654,13 +3134,13 @@ class TableTool {
       item.addEventListener("click", (e) => {
         e.stopPropagation();
         onPick();
-        menu.remove();
+        closeMenu();
         this.hideContextMenu();
       });
       menu.appendChild(item);
     });
 
-    document.body.appendChild(menu);
+    closeMenu = this.openFloating(menu);
 
     let anchorRect: DOMRect | null = null;
     if (this.contextMenu) {
@@ -3687,13 +3167,6 @@ class TableTool {
       menu.style.top = `${window.innerHeight / 2 - h / 2}px`;
     }
 
-    const closeHandler = (e: MouseEvent) => {
-      if (!menu.contains(e.target as Node)) {
-        menu.remove();
-        document.removeEventListener("mousedown", closeHandler);
-      }
-    };
-    setTimeout(() => document.addEventListener("mousedown", closeHandler), 10);
   }
 
   // Fan out an operation to every selected cell. Replaces the ~20-line
@@ -3709,7 +3182,7 @@ class TableTool {
     const maxRow = this.selectedMaxRow!;
     const minCol = this.selectedMinCol!;
     const maxCol = this.selectedMaxCol!;
-    Array.from(this.table.querySelectorAll("td, th")).forEach((cell: any) => {
+    Array.from(this.ownCells()).forEach((cell: any) => {
       const row = cell.parentElement.rowIndex;
       const startCol = parseInt(cell.dataset.logicalStartCol!);
       const endCol = parseInt(cell.dataset.logicalEndCol!);
@@ -3756,7 +3229,7 @@ class TableTool {
       return null;
     };
 
-    Array.from(this.table.querySelectorAll("td, th")).forEach(
+    Array.from(this.ownCells()).forEach(
       (raw: Element) => {
         const cell = raw as HTMLTableCellElement;
 
@@ -3898,13 +3371,26 @@ class TableTool {
   // widths so the first drag has something to adjust rather than
   // snapping every column to equal shares.
   private measureColumnWidthsPct(): number[] {
-    const firstRow = this.table.rows[0] as HTMLTableRowElement | undefined;
-    if (!firstRow) return [];
-    const tableWidth = this.table.getBoundingClientRect().width || 1;
-    return Array.from(firstRow.cells).map(
-      (c: HTMLTableCellElement) =>
-        (c.getBoundingClientRect().width / tableWidth) * 100,
-    );
+    // Per logical column, measure a cell that spans only that column
+    // (a merged first row would otherwise yield too few widths).
+    const { owner, numCols } = this.layoutGrid();
+    const tableWidth = this.table.getBoundingClientRect().width;
+    const widths: number[] = [];
+    for (let c = 0; c < numCols; c++) {
+      let px = 0;
+      for (const row of owner) {
+        const o = row[c];
+        if (o && (o.cell.colSpan || 1) === 1) {
+          px = o.cell.getBoundingClientRect().width;
+          if (px > 0) break;
+        }
+      }
+      widths.push(tableWidth > 0 && px > 0 ? (px / tableWidth) * 100 : 0);
+    }
+    const known = widths.filter((w) => w > 0);
+    if (known.length !== numCols) return Array(numCols).fill(100 / Math.max(1, numCols));
+    const total = known.reduce((a, b) => a + b, 0);
+    return widths.map((w) => (w / total) * 100);
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -3914,7 +3400,7 @@ class TableTool {
   // ──────────────────────────────────────────────────────────────────────────
   private attachKeyboardNavigation() {
     if (this.readOnly) return;
-    Array.from(this.table.querySelectorAll("td, th")).forEach(
+    Array.from(this.ownCells()).forEach(
       (raw: Element) => {
         const cell = raw as HTMLTableCellElement;
         cell.addEventListener("keydown", (e: KeyboardEvent) => {
@@ -4057,13 +3543,8 @@ class TableTool {
     actions.appendChild(rightGroup);
     popup.appendChild(actions);
 
-    const closePopup = () => {
-      popup.remove();
-      document.removeEventListener("mousedown", onDocClick);
-    };
-    const onDocClick = (e: MouseEvent) => {
-      if (!popup.contains(e.target as Node)) closePopup();
-    };
+    // Replaced by openFloating's close() once mounted below.
+    let closePopup: () => void = () => popup.remove();
 
     autoBtn.addEventListener("click", () => {
       this.setRowHeight(rowIdx, 0);
@@ -4076,7 +3557,7 @@ class TableTool {
       closePopup();
     });
 
-    document.body.appendChild(popup);
+    closePopup = this.openFloating(popup);
 
     let anchorRect: DOMRect | null = null;
     if (this.contextMenu) {
@@ -4103,7 +3584,6 @@ class TableTool {
       popup.style.top = `${(window.innerHeight - h) / 2}px`;
     }
 
-    setTimeout(() => document.addEventListener("mousedown", onDocClick), 10);
     input.focus();
     input.select();
   }
@@ -4233,7 +3713,7 @@ class TableTool {
 
     const headerSet = new Set(this.data.headerRows || []);
 
-    Array.from(this.table.querySelectorAll("tr")).forEach(
+    Array.from(this.table.rows).forEach(
       (raw: Element, rowIdx: number) => {
         const tr = raw as HTMLTableRowElement;
         const isHeader = headerSet.has(tr.rowIndex);
@@ -4360,7 +3840,7 @@ class TableTool {
   // ──────────────────────────────────────────────────────────────────────────
   private renderCaption() {
     if (!this.table) return;
-    const existing = this.table.querySelector("caption");
+    const existing = this.table.querySelector(":scope > caption");
     if (existing) existing.remove();
     const text = (this.data.caption || "").trim();
     if (!text) return;
@@ -4471,13 +3951,8 @@ class TableTool {
     actions.appendChild(rightGroup);
     popup.appendChild(actions);
 
-    const closePopup = () => {
-      popup.remove();
-      document.removeEventListener("mousedown", onDocClick);
-    };
-    const onDocClick = (e: MouseEvent) => {
-      if (!popup.contains(e.target as Node)) closePopup();
-    };
+    // Replaced by openFloating's close() once mounted below.
+    let closePopup: () => void = () => popup.remove();
 
     removeBtn.addEventListener("click", () => {
       this.data.caption = "";
@@ -4494,7 +3969,7 @@ class TableTool {
       closePopup();
     });
 
-    document.body.appendChild(popup);
+    closePopup = this.openFloating(popup);
 
     let anchorRect: DOMRect | null = null;
     if (this.contextMenu) {
@@ -4521,7 +3996,6 @@ class TableTool {
       popup.style.top = `${(window.innerHeight - h) / 2}px`;
     }
 
-    setTimeout(() => document.addEventListener("mousedown", onDocClick), 10);
     input.focus();
     input.select();
     bottomRadio;
@@ -4533,15 +4007,10 @@ class TableTool {
   // The browser's print renderer handles the actual repeat.
   // ──────────────────────────────────────────────────────────────────────────
   private toggleRepeatHeader() {
-    this.data.repeatHeaderOnPrint = this.data.repeatHeaderOnPrint === false;
-    // Rebuild the table body so thead/tbody structure matches the flag.
-    // Preserves current content + styles via the data layer.
     this.updateData();
-    this.createTable();
-    this.attachEventListeners();
-    this.attachEdgeResizeHandlers();
-    this.attachKeyboardNavigation();
-    this.applyTableStyles();
+    this.data.repeatHeader = this.data.repeatHeader === false;
+    // Rebuild so <thead> and the data-repeat-header marks match the flag.
+    this.rebuildTable();
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -4642,13 +4111,8 @@ class TableTool {
     actions.appendChild(copyBtn);
     popup.appendChild(actions);
 
-    const closePopup = () => {
-      popup.remove();
-      document.removeEventListener("mousedown", onDocClick);
-    };
-    const onDocClick = (e: MouseEvent) => {
-      if (!popup.contains(e.target as Node)) closePopup();
-    };
+    // Replaced by openFloating's close() once mounted below.
+    let closePopup: () => void = () => popup.remove();
 
     cancelBtn.addEventListener("click", closePopup);
     copyBtn.addEventListener("click", async () => {
@@ -4676,7 +4140,7 @@ class TableTool {
       }
     });
 
-    document.body.appendChild(popup);
+    closePopup = this.openFloating(popup);
 
     let anchorRect: DOMRect | null = null;
     if (this.contextMenu) {
@@ -4703,7 +4167,6 @@ class TableTool {
       popup.style.top = `${(window.innerHeight - h) / 2}px`;
     }
 
-    setTimeout(() => document.addEventListener("mousedown", onDocClick), 10);
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -4915,7 +4378,7 @@ class TableTool {
   // formulas only auto-recompute on individual cell blur, not on changes
   // in cells they depend on.
   private recalculateAllFormulas() {
-    const cells = Array.from(this.table.querySelectorAll("td, th")) as HTMLTableCellElement[];
+    const cells = Array.from(this.ownCells()) as HTMLTableCellElement[];
     let changed = 0;
     cells.forEach((cell) => {
       const row = (cell.parentElement as HTMLTableRowElement | null)?.rowIndex ?? -1;
@@ -4980,6 +4443,35 @@ class TableTool {
     }
   }
 
+  /** A cell's saved HTML: runtime-only UI (stored-image wrappers, image
+   *  resize wrappers, diagonal overlays) stripped; a formula cell saves
+   *  its formula, not the computed value it displays. */
+  private serializeCell(cell: HTMLTableCellElement): string {
+    if (cell.dataset.formulaDisplayed === "value" && cell.dataset.formula) {
+      return cell.dataset.formula
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+    const clone = cell.cloneNode(true) as HTMLElement;
+    const hadImage = !!clone.querySelector("[data-cell-image]");
+    clone.querySelectorAll("[data-cell-image]").forEach((el) => el.remove());
+    clone.querySelectorAll("[data-diagonal-overlay]").forEach((el) => el.remove());
+    clone.querySelectorAll("[data-inline-resize-wrapped]").forEach((wrap) => {
+      const img = wrap.querySelector("img");
+      if (img && wrap.parentNode) wrap.parentNode.replaceChild(img, wrap);
+      else wrap.remove();
+    });
+    // injectCellImage leaves a zero-width caret anchor after the image.
+    return hadImage ? clone.innerHTML.replace(/\u200b/g, "") : clone.innerHTML;
+  }
+
+  /**
+   * Read the whole table back from the DOM into this.data. The DOM is the
+   * source of truth for structure (cells, spans, header rows), per-cell /
+   * per-row styles, row heights and stored cell images — so every
+   * structural edit persists without index bookkeeping.
+   */
   private updateData() {
     if (!this.table) return;
 
@@ -4989,80 +4481,61 @@ class TableTool {
     const cellStyles: any = {};
     const rowStyles: any = {};
     const headerRows: number[] = [];
+    const rowHeights: number[] = [];
+    const cellImages: { [key: string]: string } = {};
+    const cellImageSizes: { [key: string]: { width: number; height: number } } = {};
 
     for (let i = 0; i < rows.length; i++) {
       const rowData: string[] = [];
-      const cells = rows[i].cells;
+      const tr = rows[i] as HTMLTableRowElement;
+      const cells = tr.cells;
 
-      if (rows[i].classList.contains(this.CSS.header)) {
-        headerRows.push(i);
+      if (tr.classList.contains(this.CSS.header)) headerRows.push(i);
+      // Only the colour: position/top on <tr> belong to the paginator.
+      if (tr.style.backgroundColor) {
+        rowStyles[i] = { backgroundColor: tr.style.backgroundColor };
       }
-
-      if (rows[i].style.backgroundColor) {
-        rowStyles[i] = { backgroundColor: rows[i].style.backgroundColor };
-      }
-
-      if (!cellStyles[i]) {
-        cellStyles[i] = {};
-      }
+      rowHeights.push(Math.round(parseFloat(tr.style.height) || 0));
+      cellStyles[i] = {};
 
       for (let j = 0; j < cells.length; j++) {
-        const cell = cells[j];
-        // Exclude managed cell images so they don't pollute the HTML content
-        const clone = cell.cloneNode(true) as HTMLElement;
-        clone
-          .querySelectorAll("[data-cell-image]")
-          .forEach((el) => el.remove());
-        // Unwrap inline-image resize wrappers so we save clean
-        // <img> HTML — the wrapper is a runtime UI concern only.
-        clone
-          .querySelectorAll("[data-inline-resize-wrapped]")
-          .forEach((wrap) => {
-            const img = wrap.querySelector("img");
-            if (img && wrap.parentNode) {
-              wrap.parentNode.replaceChild(img, wrap);
-            } else {
-              wrap.remove();
-            }
-          });
-        // A formula cell displays its computed value; persist the formula
-        // itself so it re-evaluates on load instead of freezing the number.
-        const formula =
-          cell.dataset.formulaDisplayed === "value" ? cell.dataset.formula : undefined;
-        rowData.push(
-          formula
-            ? formula.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-            : clone.innerHTML,
-        );
+        const cell = cells[j] as HTMLTableCellElement;
+        rowData.push(this.serializeCell(cell));
 
+        // Stored (sanitizer-bypassing) cell image: re-key by position.
+        const imgWrap = Array.from(cell.children).find(
+          (el) => (el as HTMLElement).dataset?.cellImage !== undefined,
+        ) as HTMLElement | undefined;
+        const src = imgWrap?.querySelector("img")?.getAttribute("src");
+        if (imgWrap && src) {
+          const key = `${i}-${j}`;
+          cellImages[key] = src;
+          const w = parseFloat(imgWrap.style.width);
+          const h = parseFloat(imgWrap.style.height);
+          if (w > 0 && h > 0) cellImageSizes[key] = { width: Math.round(w), height: Math.round(h) };
+          imgWrap.dataset.cellImage = key;
+        }
+
+        const st = cell.style;
         const cellStyle: any = {};
-        if (cell.style.backgroundColor)
-          cellStyle.backgroundColor = cell.style.backgroundColor;
-        if (cell.style.borderColor)
-          cellStyle.borderColor = cell.style.borderColor;
-        if (cell.style.borderWidth)
-          cellStyle.borderWidth = cell.style.borderWidth;
-        if (cell.style.borderStyle)
-          cellStyle.borderStyle = cell.style.borderStyle;
-        if (cell.style.borderTop) cellStyle.borderTop = cell.style.borderTop;
-        if (cell.style.borderRight)
-          cellStyle.borderRight = cell.style.borderRight;
-        if (cell.style.borderBottom)
-          cellStyle.borderBottom = cell.style.borderBottom;
-        if (cell.style.borderLeft) cellStyle.borderLeft = cell.style.borderLeft;
-        if (cell.style.textAlign) cellStyle.textAlign = cell.style.textAlign;
+        if (st.backgroundColor) cellStyle.backgroundColor = st.backgroundColor;
+        if (st.borderColor) cellStyle.borderColor = st.borderColor;
+        if (st.borderWidth) cellStyle.borderWidth = st.borderWidth;
+        if (st.borderStyle) cellStyle.borderStyle = st.borderStyle;
+        if (st.borderTop) cellStyle.borderTop = st.borderTop;
+        if (st.borderRight) cellStyle.borderRight = st.borderRight;
+        if (st.borderBottom) cellStyle.borderBottom = st.borderBottom;
+        if (st.borderLeft) cellStyle.borderLeft = st.borderLeft;
+        if (st.textAlign) cellStyle.textAlign = st.textAlign;
         if (cell.colSpan > 1) cellStyle.colSpan = cell.colSpan;
         if (cell.rowSpan > 1) cellStyle.rowSpan = cell.rowSpan;
-        if (cell.style.color) cellStyle.color = cell.style.color;
-        if (cell.style.paddingTop) cellStyle.paddingTop = cell.style.paddingTop;
-        if (cell.style.paddingBottom)
-          cellStyle.paddingBottom = cell.style.paddingBottom;
-        if (cell.style.paddingLeft)
-          cellStyle.paddingLeft = cell.style.paddingLeft;
-        if (cell.style.paddingRight)
-          cellStyle.paddingRight = cell.style.paddingRight;
-        if (cell.style.verticalAlign)
-          cellStyle.verticalAlign = cell.style.verticalAlign;
+        if (st.color) cellStyle.color = st.color;
+        if (st.fontWeight) cellStyle.fontWeight = st.fontWeight;
+        if (st.paddingTop) cellStyle.paddingTop = st.paddingTop;
+        if (st.paddingBottom) cellStyle.paddingBottom = st.paddingBottom;
+        if (st.paddingLeft) cellStyle.paddingLeft = st.paddingLeft;
+        if (st.paddingRight) cellStyle.paddingRight = st.paddingRight;
+        if (st.verticalAlign) cellStyle.verticalAlign = st.verticalAlign;
         if (
           cell.dataset.diagonalBorder === "down" ||
           cell.dataset.diagonalBorder === "up"
@@ -5083,16 +4556,30 @@ class TableTool {
     this.data.styles.rows = rowStyles;
     this.data.headerRows = headerRows;
     this.data.withHeading = headerRows.length > 0;
+    this.data.rowHeights = rowHeights.some((h) => h > 0) ? rowHeights : [];
+    this.data.cellImages = cellImages;
+    this.data.cellImageSizes = cellImageSizes;
   }
 
   save() {
     this.updateData();
+    const d = this.data;
     return {
-      ...this.data,
-      withHeading: this.data.withHeading,
-      headerRows: this.data.headerRows,
-      cellImages: this.data.cellImages || {},
-      cellImageSizes: this.data.cellImageSizes || {},
+      id: d.id,
+      content: d.content,
+      withHeading: d.withHeading,
+      headerRows: d.headerRows,
+      repeatHeader: d.repeatHeader !== false,
+      hideBorders: d.hideBorders,
+      columnWidths: d.columnWidths,
+      rowHeights: d.rowHeights,
+      theme: d.theme,
+      tableAlign: d.tableAlign,
+      caption: d.caption,
+      captionPosition: d.captionPosition,
+      cellImages: d.cellImages || {},
+      cellImageSizes: d.cellImageSizes || {},
+      styles: d.styles,
     };
   }
 
@@ -5102,18 +4589,17 @@ class TableTool {
       content: TABLE_CELL_TAGS,
       withHeading: false,
       headerRows: false,
+      repeatHeader: false,
       hideBorders: false,
       columnWidths: false,
       rowHeights: false,
       theme: false,
-      repeatHeaderOnPrint: false,
       tableAlign: false,
       caption: false,
       captionPosition: false,
       cellImages: true,
       cellImageSizes: false,
       id: false,
-      linkedField: false,
       styles: false,
     };
   }
@@ -5149,28 +4635,62 @@ class TableTool {
     return false;
   }
 
+  /** Replace the whole table with pasted cells: per-cell / per-row state
+   *  of the previous table (styles, spans, sizes, images) no longer
+   *  applies to the new grid, so it is reset rather than mis-applied. */
+  private replaceContent(content: string[][], headerRows: number[], cells: any = {}) {
+    this.data.content = content;
+    this.data.headerRows = headerRows;
+    this.data.withHeading = headerRows.length > 0;
+    this.data.styles.cells = cells;
+    this.data.styles.rows = {};
+    this.data.rowHeights = [];
+    this.data.columnWidths = [];
+    this.data.cellImages = {};
+    this.data.cellImageSizes = {};
+    padRaggedRows(this.data.content, this.data.styles.cells);
+    this.rebuildTable();
+    this.updateData();
+  }
+
   private async pasteHtmlTable(tableElement: HTMLElement) {
     try {
-      const rows = Array.from(tableElement.querySelectorAll("tr"));
+      const table = tableElement as HTMLTableElement;
+      const rows: HTMLTableRowElement[] = table.rows
+        ? Array.from(table.rows)
+        : Array.from(tableElement.querySelectorAll("tr"));
       const content: string[][] = [];
       const headerRows: number[] = [];
+      const cells: any = {};
 
       rows.forEach((row, index) => {
-        const isHeader = row.closest("thead") || row.querySelector("th");
-        if (isHeader) {
-          headerRows.push(index);
-        }
-        const cells = Array.from(row.querySelectorAll("td, th")).map(
-          (cell) => cell.textContent || "",
+        const isHeader =
+          row.parentElement?.tagName === "THEAD" ||
+          (row.cells.length > 0 &&
+            Array.from(row.cells).every((c) => c.tagName === "TH"));
+        // Header rows must lead the table.
+        if (isHeader && headerRows.length === index) headerRows.push(index);
+        content.push(
+          Array.from(row.cells).map((cell, j) => {
+            const cs = spanOf(cell.colSpan);
+            const rs = spanOf(cell.rowSpan);
+            if (cs > 1 || rs > 1) {
+              cells[index] = cells[index] || {};
+              cells[index][j] = {
+                ...(cs > 1 ? { colSpan: cs } : {}),
+                ...(rs > 1 ? { rowSpan: rs } : {}),
+              };
+            }
+            return (cell.textContent || "")
+              .replace(/&/g, "&amp;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;");
+          }),
         );
-        content.push(cells);
       });
 
-      this.data.content = content;
-      this.data.headerRows = headerRows;
-      this.data.withHeading = headerRows.length > 0;
-      this.render();
-
+      if (content.length === 0) return false;
+      this.replaceContent(content, headerRows, cells);
       return true;
     } catch (error) {
       console.error("Error pasting HTML table:", error);
@@ -5220,8 +4740,9 @@ class TableTool {
       }
 
       if (content.length > 0 && content[0].length > 0) {
-        this.data.content = content;
-        this.render();
+        const esc = (v: string) =>
+          v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        this.replaceContent(content.map((r) => r.map(esc)), []);
         return true;
       }
 

@@ -12,7 +12,6 @@ import {
   FootnoteReferenceRun,
   Header,
   HeadingLevel,
-  ImageRun,
   PageBorderOffsetFrom,
   PageBreak,
   PageNumber,
@@ -20,11 +19,8 @@ import {
   Packer,
   Paragraph,
   Table,
-  TableCell,
   TableOfContents,
-  TableRow,
   TextRun,
-  WidthType,
   type IRunOptions,
   type ISectionOptions,
   type ParagraphChild,
@@ -35,6 +31,9 @@ import { normalizeBlock } from "../normalize";
 import { isSafeLinkUrl } from "../safeUrl";
 import { cleanFormat, FORMAT_TUNE, INDENT_STEP_PX } from "../format/paragraphFormat";
 import type { HeaderFooterSet, PageBorder, PageSetup } from "../pageSetup";
+import { chartToDocx, equationToDocx, prepareObjectImages, textBoxToDocx } from "./export/objects";
+import { imageBlockToDocx, loadDocxImages, useDocxImages } from "./export/image";
+import { tableToDocx } from "./export/table";
 
 /** CSS px (96 dpi) → twips (1/1440 in). */
 const pxToTwip = (px: number) => Math.round(px * 15);
@@ -273,6 +272,10 @@ export async function exportDocx(
   const sections: Array<{ layout: PageLayout; children: FileChild[] }> = [
     { layout: firstLayout, children: [] },
   ];
+  // Charts are rasterised (async) before the synchronous conversion.
+  await prepareObjectImages(data.blocks ?? []);
+  // Image blocks (body + headers/footers): fetch http / relative URLs now.
+  useDocxImages(await loadDocxImages(data.blocks ?? [], setup?.headers, setup?.footers));
   for (const block of data.blocks ?? []) {
     if (block.type === "sectionBreak") {
       const layout = (block.data as { layout?: unknown } | undefined)?.layout;
@@ -412,37 +415,16 @@ function blockToDocx(
       return flattenList(items, 0, { kind: style === "checklist" ? "checklist" : "bullet" }, ctx);
     }
     case "table": {
-      const content = (block.data.content as string[][]) ?? [];
-      if (content.length === 0) return null;
-      // TableTool saves `withHeading`; older data used `withHeadings`.
-      const withHeadings = Boolean(block.data.withHeading ?? block.data.withHeadings);
-      return new Table({
-        rows: content.map(
-          (row, rowIdx) =>
-            new TableRow({
-              tableHeader: withHeadings && rowIdx === 0,
-              children: row.map(
-                (cellHtml) =>
-                  new TableCell({
-                    children: [
-                      new Paragraph({ children: inlineHtmlToRuns(cellHtml, ctx) }),
-                    ],
-                  }),
-              ),
-            }),
-        ),
-        width: { size: 100, type: WidthType.PERCENTAGE },
+      // Merges, header rows, shading, borders, widths: see ./export/table.
+      return tableToDocx(block.data as Record<string, unknown>, {
+        toRuns: (html) => inlineHtmlToRuns(html, ctx),
       });
     }
     case "image": {
-      // ImageTool and the importer store `data.url`; `data.file.url` is
-      // the stock @editorjs/image shape — accept either.
-      const file = block.data.file as { url?: string } | undefined;
-      const url =
-        (typeof block.data.url === "string" ? block.data.url : undefined) ??
-        file?.url;
-      if (!url) return null;
-      return imageUrlToParagraph(url, String(block.data.caption ?? ""));
+      // Saved data uses `file.url`; older data / the importer use `url`.
+      // Size, crop, wrap, caption, alt text: see ./export/image.
+      const out = imageBlockToDocx(block);
+      return out.length > 0 ? out : null;
     }
     case "delimiter":
     case "horizontalLine": {
@@ -472,6 +454,12 @@ function blockToDocx(
         }),
       ];
     }
+    case "equation":
+      return equationToDocx(block.data);
+    case "textBox":
+      return textBoxToDocx(block.data, (html) => inlineHtmlToRuns(html, ctx));
+    case "chart":
+      return chartToDocx(block.data);
     default:
       return null;
   }
@@ -536,57 +524,6 @@ function flattenList(
   return out;
 }
 
-function imageUrlToParagraph(url: string, caption: string): Paragraph {
-  if (!url.startsWith("data:")) {
-    return new Paragraph({
-      children: [new TextRun({ text: `[image: ${url}]`, italics: true })],
-    });
-  }
-  const match = url.match(/^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i);
-  if (!match) return new Paragraph({ children: [] });
-  const [, mime, b64] = match;
-  const type = typeFromMime(mime!);
-  // Unsupported raster formats (webp, svg, tiff, emf…) would otherwise
-  // be mislabelled as JPEG and produce a broken picture in Word.
-  if (!type) {
-    return new Paragraph({
-      children: [
-        new TextRun({ text: `[unsupported image: ${mime}]`, italics: true }),
-      ],
-    });
-  }
-  const bin = atob(b64!);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return new Paragraph({
-    children: [
-      new ImageRun({
-        data: bytes,
-        transformation: { width: 480, height: 360 },
-        type,
-      } as never),
-      ...(caption ? [new TextRun({ text: `\n${caption}`, italics: true })] : []),
-    ],
-  });
-}
-
-function typeFromMime(mime: string): "png" | "jpg" | "gif" | "bmp" | null {
-  switch (mime.toLowerCase()) {
-    case "image/png":
-      return "png";
-    case "image/jpeg":
-    case "image/jpg":
-    case "image/pjpeg":
-      return "jpg";
-    case "image/gif":
-      return "gif";
-    case "image/bmp":
-    case "image/x-ms-bmp":
-      return "bmp";
-    default:
-      return null;
-  }
-}
 
 function inlineHtmlToRuns(html: string, ctx?: ExportContext): ParagraphChild[] {
   if (!html) return [];

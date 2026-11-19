@@ -1,0 +1,125 @@
+/*
+ * Equation block. The preview reserves a min-height so the block's height
+ * barely moves when KaTeX finishes loading (the paginator measures it as
+ * one unsplittable unit).
+ */
+.tp-equation {
+  margin: 0.4em 0;
+}
+
+.tp-equation__preview {
+  min-height: 2.6em;
+  padding: 0.3em 0.4em;
+  border-radius: 4px;
+  outline: none;
+  cursor: pointer;
+  overflow-x: auto;
+  overflow-y: hidden;
+  display: flex;
+  align-items: center;
+}
+
+.tp-equation--display .tp-equation__preview {
+  justify-content: center;
+}
+
+.tp-equation--inline .tp-equation__preview {
+  justify-content: flex-start;
+}
+
+.tp-equation__preview .katex-display {
+  margin: 0;
+}
+
+.tp-equation__preview:hover,
+.tp-equation__preview:focus-visible {
+  background: rgba(9, 105, 218, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(9, 105, 218, 0.35);
+}
+
+.tp-equation__placeholder {
+  color: #6e7781;
+  font-style: italic;
+}
+
+.tp-equation__pending {
+  color: #57606a;
+  font-size: 0.9em;
+}
+
+.tp-equation__error,
+.tp-equation .katex-error {
+  color: #cf222e;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+  white-space: pre-wrap;
+}
+
+.tp-equation__editor {
+  margin-top: 0.4em;
+  padding: 0.6em;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: #f6f8fa;
+  font-size: 13px;
+}
+
+.tp-equation__label {
+  display: block;
+  color: #57606a;
+  font-weight: 600;
+}
+
+.tp-equation__input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 0.3em;
+  padding: 0.4em 0.5em;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+  background: #fff;
+  color: #1f2328;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  resize: vertical;
+}
+
+.tp-equation__live {
+  min-height: 2em;
+  margin: 0.5em 0;
+  padding: 0.3em;
+  background: #fff;
+  border-radius: 4px;
+  overflow-x: auto;
+  text-align: center;
+}
+
+.tp-equation__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75em;
+}
+
+.tp-equation__hint {
+  color: #6e7781;
+}
+
+.tp-equation__done {
+  padding: 0.25em 0.9em;
+  border: 1px solid #1f883d;
+  border-radius: 4px;
+  background: #1f883d;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+@media print {
+  .tp-equation__preview:hover,
+  .tp-equation__preview:focus-visible {
+    background: none;
+    box-shadow: none;
+  }
+}

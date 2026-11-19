@@ -1,5 +1,6 @@
 // @ts-nocheck
-import { isSafeLinkUrl } from "../safeUrl";
+import { isSafeImageUrl, isSafeLinkUrl } from "../safeUrl";
+import "./ImageTool.css";
 /**
  * ImageTool — EditorJS block tool for images.
  *
@@ -15,17 +16,226 @@ import { isSafeLinkUrl } from "../safeUrl";
  *     the pre-port image file paste path).
  */
 
-/** Inline shim for the eSigns i18n layer. Returns the literal
- *  `options.defaultValue` when supplied, otherwise derives a human-ish
- *  label from the last `.`-separated segment of `key`. */
-function t(key: string, options?: { defaultValue?: string } & Record<string, unknown>): string {
+/** English strings for keys the eSigns code calls without a defaultValue. */
+const DEFAULT_STRINGS: Record<string, string> = {
+  "common.cancel": "Cancel",
+  "editor.common.reset": "Reset",
+  "editor.tools.image.alignment": "Alignment",
+  "editor.tools.image.leftAlign": "Align left",
+  "editor.tools.image.centerAlign": "Align center",
+  "editor.tools.image.rightAlign": "Align right",
+  "editor.tools.image.aspectRatio": "Aspect ratio",
+  "editor.tools.image.aspectRatioHelp": "Choose a ratio to reshape the image frame",
+  "editor.tools.image.ratioFree": "Free",
+  "editor.tools.image.ratioLocked": "Locked (keep current proportions)",
+  "editor.tools.image.ratioSquare": "Square (1:1)",
+  "editor.tools.image.ratioStandard": "Standard (4:3)",
+  "editor.tools.image.ratioClassic": "Classic (3:2)",
+  "editor.tools.image.ratioWide": "Wide (16:9)",
+  "editor.tools.image.ratioPortrait": "Portrait (9:16)",
+  "editor.tools.image.ratioVertical": "Vertical (3:4)",
+  "editor.tools.image.ratioPanoramic": "Panoramic (2:1)",
+  "editor.tools.image.ratioTall": "Tall (1:2)",
+  "editor.tools.image.ratioStory": "Story (9:10)",
+  "editor.tools.image.rotate": "Rotate",
+  "editor.tools.image.rotateLeft": "Rotate left",
+  "editor.tools.image.rotateRight": "Rotate right",
+  "editor.tools.image.flip": "Flip",
+  "editor.tools.image.flipHorizontal": "Flip horizontally",
+  "editor.tools.image.flipVertical": "Flip vertically",
+  "editor.tools.image.zoom": "Zoom",
+  "editor.tools.image.zoomIn": "Zoom in",
+  "editor.tools.image.zoomOut": "Zoom out",
+  "editor.tools.image.margins": "Margins",
+  "editor.tools.image.marginsHelp": "Space around the image, in pixels",
+  "editor.tools.image.top": "Top",
+  "editor.tools.image.right": "Right",
+  "editor.tools.image.bottom": "Bottom",
+  "editor.tools.image.left": "Left",
+  "editor.tools.image.topMargin": "Top margin",
+  "editor.tools.image.rightMargin": "Right margin",
+  "editor.tools.image.bottomMargin": "Bottom margin",
+  "editor.tools.image.leftMargin": "Left margin",
+  "editor.tools.image.resetAllMargins": "Reset all margins",
+  "editor.tools.image.chooseFile": "Choose file",
+  "editor.tools.image.clickToUpload": "Click to upload",
+  "editor.tools.image.orDragDrop": "or drag and drop an image",
+  "editor.tools.image.pasteUrl": "Paste URL",
+  "editor.tools.image.pasteHint": "Press {{key}} to paste an image or image URL",
+  "editor.tools.image.load": "Load",
+  "editor.tools.image.enterUrl": "Enter an image URL",
+  "editor.tools.image.enterValidUrl": "Enter a valid image URL (http or https)",
+  "editor.tools.image.typeNotAccepted": "That file type isn't supported",
+  "editor.tools.image.failedToLoad": "The image failed to load",
+  "editor.tools.image.tryAnother": "Try another image or check the link",
+  "editor.tools.image.tryAgain": "Try again",
+  "editor.tools.image.imagePreview": "Image",
+  "editor.tools.image.uploading": "Uploading image…",
+  "editor.tools.image.uploadFailedEmbedded":
+    "Upload failed — the image was embedded in the document instead.",
+  "editor.tools.image.uploadFailed": "Couldn't add the image: {{reason}}",
+  "editor.tools.image.linkedNotCopied":
+    "Couldn't copy the image — it is linked from its original address.",
+};
+
+/** Inline shim for the eSigns i18n layer. Picks `options.defaultValue`,
+ *  then the English table above, then a label derived from the key's
+ *  last segment — and interpolates `{{var}}` placeholders from `options`. */
+export function t(
+  key: string,
+  options?: { defaultValue?: string } & Record<string, unknown>,
+): string {
+  let text: string;
   if (options && typeof options.defaultValue === "string") {
-    return options.defaultValue;
+    text = options.defaultValue;
+  } else if (DEFAULT_STRINGS[key]) {
+    text = DEFAULT_STRINGS[key];
+  } else {
+    const last = key.split(".").pop() || key;
+    const spaced = last.replace(/([A-Z])/g, " $1").replace(/[._-]/g, " ").trim();
+    text = spaced.charAt(0).toUpperCase() + spaced.slice(1).toLowerCase();
   }
-  const last = key.split(".").pop() || key;
-  const spaced = last.replace(/([A-Z])/g, " $1").replace(/[._-]/g, " ").trim();
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+  if (!options) return text;
+  return text.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (match, name) =>
+    name !== "defaultValue" && options[name] !== undefined && options[name] !== null
+      ? String(options[name])
+      : match,
+  );
 }
+
+// ── Wrap contract ──────────────────────────────────────────────────────
+// The tool never floats anything itself: it tags its root with exactly one
+// of these classes and the editor CSS / paginator decide the layout (the
+// whole `.ce-block` is floated for the two float modes).
+
+export type ImageWrapMode = "inline" | "top-bottom" | "float-left" | "float-right";
+
+export const IMAGE_WRAP_CLASSES: Record<ImageWrapMode, string> = {
+  inline: "tp-image--inline",
+  "top-bottom": "tp-image--top-bottom",
+  "float-left": "tp-image--float-left",
+  "float-right": "tp-image--float-right",
+};
+
+const FLOAT_WRAPS = new Set(["square", "tight", "through"]);
+
+/**
+ * Canonical wrap mode for saved image data (`data.tunes.imageTune`).
+ *   inline                       → inline
+ *   square / tight / through     → float-left / float-right by `float`
+ *                                  (legacy `float: "inline"` never floated
+ *                                  → top-bottom)
+ *   top-bottom / none / behind / in-front / missing → top-bottom
+ */
+export function imageWrapMode(data: unknown): ImageWrapMode {
+  const tune = (data as { tunes?: { imageTune?: { wrapText?: unknown; float?: unknown } } } | null)
+    ?.tunes?.imageTune;
+  const wrap = typeof tune?.wrapText === "string" ? tune.wrapText : "";
+  if (wrap === "inline") return "inline";
+  if (FLOAT_WRAPS.has(wrap)) {
+    if (tune?.float === "left") return "float-left";
+    if (tune?.float === "right") return "float-right";
+  }
+  return "top-bottom";
+}
+
+/** `"123px"` / `123` → 123; anything else → 0. */
+export function parsePx(value: unknown): number {
+  if (typeof value === "number") return Number.isFinite(value) && value > 0 ? value : 0;
+  if (typeof value !== "string" || value.includes("%")) return 0;
+  const n = parseFloat(value);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/** Read a Blob as a data: URL. */
+export function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error ?? new Error("read failed"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/** True when the page can actually rasterise images (not jsdom / SSR). */
+export function canRasterize(): boolean {
+  if (typeof document === "undefined" || typeof Image === "undefined") return false;
+  if (typeof navigator !== "undefined" && /jsdom/i.test(navigator.userAgent)) return false;
+  try {
+    const c = document.createElement("canvas");
+    return typeof c.getContext === "function" && !!c.getContext("2d");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Draw an image (SVG, WebP, …) onto a canvas and return PNG bytes. Only
+ * works in a real browser; rejects in jsdom so callers can fall back.
+ */
+export async function rasterizeToPng(
+  blob: Blob,
+  size?: { width: number; height: number },
+): Promise<Blob> {
+  if (!canRasterize()) throw new Error("canvas rasterisation unavailable");
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error("image decode failed"));
+      el.src = objectUrl;
+    });
+    const w = Math.max(1, Math.round(size?.width || img.naturalWidth || 300));
+    const h = Math.max(1, Math.round(size?.height || img.naturalHeight || 150));
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("no 2d context");
+    ctx.drawImage(img, 0, 0, w, h);
+    return await new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob failed"))), "image/png"),
+    );
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+/** Raster types a data: URL may carry (mirrors safeUrl's allow-list). */
+const EMBEDDABLE_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/gif",
+  "image/webp",
+  "image/bmp",
+]);
+
+/** Image URLs recognised in pasted text / the URL field. */
+const IMAGE_URL_PATTERN = /^(https?:\/\/|\/)\S+\.(?:jpe?g|png|gif|bmp|webp|svg)(?:[?#]\S*)?$/i;
+
+/** File-picker filter: everything the browser can show; non-raster types
+ *  are uploaded as-is or rasterised before embedding. */
+const ACCEPT_TYPES =
+  "image/png,image/jpeg,image/gif,image/webp,image/bmp,image/svg+xml,image/*";
+
+/** Outcome of turning a file / URL into something `data.url` can hold. */
+interface IngestResult {
+  url: string;
+  /** Why we didn't end up with an uploaded copy (shown to the user). */
+  notice?: string;
+}
+
+/** Any angle → 0, 90, 180 or 270-style value in [0, 360). */
+export function normalizeRotation(value: unknown): number {
+  const n = typeof value === "number" ? value : parseFloat(String(value));
+  if (!Number.isFinite(n)) return 0;
+  return ((Math.round(n) % 360) + 360) % 360;
+}
+
+/** The single open settings panel across all image blocks. */
+let openPanelOwner: ImageTool | null = null;
 
 /** eSigns called `failedPopper(message)` to show a toast on bad user input;
  *  the TP-Writer port surfaces the same message via a console warning. */
@@ -126,30 +336,32 @@ export default class ImageTool {
     };
   }
 
-  onPaste(event: CustomEvent) {
-    switch (event.detail.type) {
+  /** Editor.js paste / drop entry point. Returns the ingest promise (never
+   *  rejects) so tests and callers can await the result. */
+  onPaste(event: CustomEvent): Promise<void> {
+    const detail = event?.detail ?? {};
+    switch (detail.type) {
       case "file": {
-        const file = event.detail.file as File;
-        if (file.type.startsWith("image/")) {
-          void this.ingestFile(file).then((url) => {
-            this.data.url = url;
-            this.createImage();
-          });
+        const file = detail.file as File;
+        if (file && typeof file.type === "string" && file.type.startsWith("image/")) {
+          return this.runIngest(() => this.ingestFile(file));
         }
         break;
       }
-      case "tag":
-        const img = event.detail.data as HTMLImageElement;
-        this.ingestImageUrl(img.src, () => this.createImage());
+      case "tag": {
+        const img = detail.data as HTMLImageElement;
+        const src = img?.getAttribute?.("src") || img?.src || "";
+        if (img?.alt && !this.data.altText) this.data.altText = img.alt;
+        if (src) return this.runIngest(() => this.ingestUrl(src));
         break;
+      }
       case "pattern":
-        if (event.detail.key === "image") {
-          this.ingestImageUrl(event.detail.data as string, () =>
-            this.createImage(),
-          );
+        if (detail.key === "image" && typeof detail.data === "string") {
+          return this.runIngest(() => this.ingestUrl(detail.data.trim()));
         }
         break;
     }
+    return Promise.resolve();
   }
 
   // renderSettings() intentionally omitted — EditorJS falls back to the
@@ -206,7 +418,8 @@ export default class ImageTool {
       });
       button.setAttribute("data-align", align.value);
 
-      const isActive = this.data.tunes?.alignment?.alignment === align.value;
+      const isActive =
+        (this.data.tunes?.alignment?.alignment || "left") === align.value;
       if (isActive) {
         button.style.backgroundColor = "#4086FF";
         button.style.color = "#fff";
@@ -276,7 +489,8 @@ export default class ImageTool {
       });
       b.dataset.wrap = value;
       b.style.fontSize = "12px";
-      const isActive = this.data.tunes?.imageTune?.wrapText === value;
+      const isActive =
+        (this.data.tunes?.imageTune?.wrapText || "top-bottom") === value;
       if (isActive) {
         b.style.backgroundColor = "#2563eb";
         b.style.color = "#fff";
@@ -294,6 +508,7 @@ export default class ImageTool {
     const select = document.createElement("select");
     select.innerHTML = `
       <option value="free">${t("editor.tools.image.ratioFree")}</option>
+      <option value="locked">${t("editor.tools.image.ratioLocked")}</option>
       <option value="1:1">${t("editor.tools.image.ratioSquare")}</option>
       <option value="4:3">${t("editor.tools.image.ratioStandard")}</option>
       <option value="3:2">${t("editor.tools.image.ratioClassic")}</option>
@@ -319,6 +534,8 @@ export default class ImageTool {
     select.addEventListener("change", (event) => {
       this.data.aspectRatio = (event.target as HTMLSelectElement).value;
       this.applyAspectRatio();
+      syncSizeFields();
+      refreshLockBtn();
     });
 
     select.addEventListener("focus", () => {
@@ -350,21 +567,11 @@ export default class ImageTool {
     const sizeRow = document.createElement("div");
     sizeRow.style.cssText = "display:flex;gap:8px;align-items:flex-end;";
 
-    const parsePx = (v: string | undefined) => {
-      if (!v) return 0;
-      const n = parseInt(String(v), 10);
-      return isNaN(n) ? 0 : n;
-    };
     const currentImg = () =>
       this.imageContainer?.querySelector("img") as HTMLImageElement | null;
-    const naturalRatio = () => {
-      const img = currentImg();
-      if (img && img.naturalWidth && img.naturalHeight)
-        return img.naturalWidth / img.naturalHeight;
-      const w = parsePx(this.data.width);
-      const h = parsePx(this.data.height);
-      return w && h ? w / h : 1;
-    };
+    // Ratio to hold when the lock is on / a preset is picked: the current
+    // box first (what the user sees), else the picture's natural ratio.
+    const currentRatio = () => this.currentAspect();
 
     const makeNumField = (label: string, initial: number) => {
       const wrap = document.createElement("div");
@@ -386,12 +593,16 @@ export default class ImageTool {
 
     const widthField = makeNumField(
       t("editor.tools.image.widthPx", { defaultValue: "Width (px)" }),
-      parsePx(this.data.width),
+      Math.round(parsePx(this.data.width)),
     );
     const heightField = makeNumField(
       t("editor.tools.image.heightPx", { defaultValue: "Height (px)" }),
-      parsePx(this.data.height),
+      Math.round(parsePx(this.data.height)),
     );
+    const syncSizeFields = () => {
+      widthField.input.value = String(Math.round(parsePx(this.data.width)));
+      heightField.input.value = String(Math.round(parsePx(this.data.height)));
+    };
 
     const lockBtn = document.createElement("button");
     lockBtn.type = "button";
@@ -413,25 +624,27 @@ export default class ImageTool {
       "padding:8px 10px;border:1px solid #d0d5dd;background:#fff;border-radius:6px;cursor:pointer;height:38px;";
     refreshLockBtn();
     lockBtn.addEventListener("click", () => {
-      // Flip between free (unlocked) and a derived natural ratio string.
-      // We don't try to map to a preset slot — "custom-locked" is enough
-      // for CustomTableTool-level needs.
+      // "locked" keeps whatever proportions the image has right now. (It
+      // used to store "1:1", which squashed the picture into a square on
+      // the next render.)
       if (this.data.aspectRatio && this.data.aspectRatio !== "free") {
         this.data.aspectRatio = "free";
       } else {
-        this.data.aspectRatio = "1:1"; // natural ratio enforced via code below
+        this.data.aspectRatio = "locked";
       }
+      select.value = this.data.aspectRatio;
       refreshLockBtn();
     });
 
-    const applySize = (changedAxis: "w" | "h") => {
+    const applySize = (changedAxis: "w" | "h", keepRatio = false) => {
       const img = currentImg();
       if (!img) return;
-      let w = Math.max(20, parsePx(widthField.input.value) || 0);
-      let h = Math.max(20, parsePx(heightField.input.value) || 0);
-      const locked = this.data.aspectRatio && this.data.aspectRatio !== "free";
+      const r = currentRatio() || 1;
+      let w = Math.min(2000, Math.max(20, Math.round(parsePx(widthField.input.value)) || 0));
+      let h = Math.min(2000, Math.max(20, Math.round(parsePx(heightField.input.value)) || 0));
+      const locked =
+        keepRatio || (this.data.aspectRatio && this.data.aspectRatio !== "free");
       if (locked) {
-        const r = naturalRatio() || 1;
         if (changedAxis === "w") {
           h = Math.round(w / r);
           heightField.input.value = String(h);
@@ -440,11 +653,9 @@ export default class ImageTool {
           widthField.input.value = String(w);
         }
       }
-      img.style.width = `${w}px`;
-      img.style.height = `${h}px`;
-      this.data.width = `${w}px`;
-      this.data.height = `${h}px`;
-      this.updateResizeHandles();
+      widthField.input.value = String(w);
+      heightField.input.value = String(h);
+      this.setImageSize(w, h);
     };
     widthField.input.addEventListener("change", () => applySize("w"));
     heightField.input.addEventListener("change", () => applySize("h"));
@@ -482,7 +693,8 @@ export default class ImageTool {
       const b = this.createButton(label, () => {
         const targetW = width === "full" ? this.MAX_PARENT_WIDTH : width;
         widthField.input.value = String(targetW);
-        applySize("w");
+        // Presets resize; they never distort the picture.
+        applySize("w", true);
       });
       b.style.flex = "1";
       b.style.fontSize = "12px";
@@ -704,6 +916,9 @@ export default class ImageTool {
         };
       }
       this.applyBorderStyles();
+      // Border styling resets the radius; re-apply the chosen shape on top.
+      this.applyShapeAndShadow();
+      this.syncWrapContract();
     };
     styleSelect.addEventListener("change", commitBorder);
     widthSelect.addEventListener("change", commitBorder);
@@ -825,7 +1040,7 @@ export default class ImageTool {
       "↶",
       t("editor.tools.image.rotateLeft"),
       () => {
-        this.data.rotation = (this.data.rotation - 90) % 360;
+        this.data.rotation = normalizeRotation(this.data.rotation - 90);
         this.applyTransformation();
         updateRotationDisplay();
       },
@@ -835,7 +1050,7 @@ export default class ImageTool {
       "↷",
       t("editor.tools.image.rotateRight"),
       () => {
-        this.data.rotation = (this.data.rotation + 90) % 360;
+        this.data.rotation = normalizeRotation(this.data.rotation + 90);
         this.applyTransformation();
         updateRotationDisplay();
       },
@@ -849,10 +1064,10 @@ export default class ImageTool {
     rotationDisplay.style.borderRadius = "6px";
     rotationDisplay.style.fontSize = "14px";
     rotationDisplay.style.color = "#344054";
-    rotationDisplay.textContent = `${Math.abs(this.data.rotation % 360)}°`;
+    rotationDisplay.textContent = `${normalizeRotation(this.data.rotation)}°`;
 
     const updateRotationDisplay = () => {
-      rotationDisplay.textContent = `${Math.abs(this.data.rotation % 360)}°`;
+      rotationDisplay.textContent = `${normalizeRotation(this.data.rotation)}°`;
     };
 
     rotateContainer.appendChild(rotateLeft);
@@ -923,7 +1138,7 @@ export default class ImageTool {
       "−",
       t("editor.tools.image.zoomOut"),
       () => {
-        this.data.zoom = Math.max(0.1, this.data.zoom * 0.9);
+        this.data.zoom = Math.max(0.1, Math.round(this.data.zoom * 0.9 * 1000) / 1000);
         this.applyZoom();
         updateZoomDisplay();
       },
@@ -940,7 +1155,7 @@ export default class ImageTool {
       "+",
       t("editor.tools.image.zoomIn"),
       () => {
-        this.data.zoom *= 1.1;
+        this.data.zoom = Math.min(10, Math.round(this.data.zoom * 1.1 * 1000) / 1000);
         this.applyZoom();
         updateZoomDisplay();
       },
@@ -1147,10 +1362,13 @@ export default class ImageTool {
   private clearCrop(): void {
     this.data.crop = undefined;
     this.createImage();
+    this.notifyChange();
   }
 
   private enterCropMode(): void {
     if (!this.imageContainer || !this.wrapper) return;
+    // Already cropping — don't stack a second overlay.
+    if (this.imageContainer.querySelector("[data-crop-overlay]")) return;
     const img = this.imageContainer.querySelector(
       "img",
     ) as HTMLImageElement | null;
@@ -1264,10 +1482,12 @@ export default class ImageTool {
       outline.style.left = `${l}%`;
       outline.style.right = `${r}%`;
       outline.style.bottom = `${b}%`;
-      dimTop.style.cssText += `top:0;left:0;right:0;height:${t}%;`;
-      dimBottom.style.cssText += `bottom:0;left:0;right:0;height:${b}%;`;
-      dimLeft.style.cssText += `top:${t}%;bottom:${b}%;left:0;width:${l}%;`;
-      dimRight.style.cssText += `top:${t}%;bottom:${b}%;right:0;width:${r}%;`;
+      // Assign (not append) so dragging doesn't grow the style string.
+      const base = "position:absolute;background:rgba(0,0,0,0.5);pointer-events:none;";
+      dimTop.style.cssText = `${base}top:0;left:0;right:0;height:${t}%;`;
+      dimBottom.style.cssText = `${base}bottom:0;left:0;right:0;height:${b}%;`;
+      dimLeft.style.cssText = `${base}top:${t}%;bottom:${b}%;left:0;width:${l}%;`;
+      dimRight.style.cssText = `${base}top:${t}%;bottom:${b}%;right:0;width:${r}%;`;
       // Handle positions relative to the outline. Half-size offsets keep
       // the circles centred on the outline edges.
       const H = 5;
@@ -1321,12 +1541,7 @@ export default class ImageTool {
           Object.assign(rect, next);
           layout();
         };
-        const onUp = () => {
-          document.removeEventListener("mousemove", onMove);
-          document.removeEventListener("mouseup", onUp);
-        };
-        document.addEventListener("mousemove", onMove);
-        document.addEventListener("mouseup", onUp);
+        this.trackDrag(onMove);
       });
     };
     handles.forEach((h) => attachHandle(h.el, h.pos));
@@ -1355,12 +1570,7 @@ export default class ImageTool {
         rect.bottom = 100 - nextTop - heightPct;
         layout();
       };
-      const onUp = () => {
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-      };
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
+      this.trackDrag(onMove);
     });
 
     // Done / Cancel toolbar — floats just below the image.
@@ -1390,6 +1600,7 @@ export default class ImageTool {
         }
         cleanup();
         this.createImage();
+        this.notifyChange();
       },
     );
     doneBtn.style.backgroundColor = "#2563eb";
@@ -1409,6 +1620,7 @@ export default class ImageTool {
         img.style.cssText = savedImgCss;
         // Re-apply any existing crop (restores the saved view).
         this.applyCropIfAny();
+        this.syncWrapContract();
       },
     );
 
@@ -1419,6 +1631,7 @@ export default class ImageTool {
     const cleanup = () => {
       overlay.remove();
       toolbar.remove();
+      this.stopDrag();
     };
   }
 
@@ -1430,26 +1643,22 @@ export default class ImageTool {
   // untouched copy of the originally-uploaded image.
   // ──────────────────────────────────────────────────────────────────────────
   private triggerReplaceImage(): void {
+    // Not attached to the DOM: a cancelled file dialog never fires
+    // `change`, and an attached input would then leak into <body>.
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = "image/*";
-    input.style.display = "none";
-    document.body.appendChild(input);
+    input.accept = ACCEPT_TYPES;
     input.addEventListener("change", () => {
       const file = input.files?.[0];
-      input.remove();
-      if (!file) return;
-      void this.ingestFile(file).then((src) => {
-        if (!src) return;
-        this.data.url = src;
-        // originalUrl stays unchanged — Replace is a new "original" the
-        // user chose explicitly, but Reset should bring them back to
-        // THIS replacement rather than the pre-replacement image.
-        this.data.originalUrl = src;
-        this.createImage();
-      });
+      if (file) void this.replaceWithFile(file);
     });
     input.click();
+  }
+
+  /** Swap the picture, keeping size / styling. Goes through the uploader
+   *  like any other ingest; on failure the previous picture stays. */
+  replaceWithFile(file: File): Promise<void> {
+    return this.runIngest(() => this.ingestFile(file), { replace: true });
   }
 
   private resetToOriginal(): void {
@@ -1477,6 +1686,7 @@ export default class ImageTool {
     this.data.height = "auto";
     this.data.url = this.data.originalUrl || this.data.url;
     this.createImage();
+    this.notifyChange();
   }
 
   private renderMarginSettings(container: HTMLElement): void {
@@ -1780,34 +1990,319 @@ export default class ImageTool {
   private readonly MAX_PARENT_WIDTH = 729;
   private contextMenu: HTMLElement | null = null;
   private isContextMenuOpen: boolean = false;
+  private block: any = null;
+  private destroyed = false;
+  /** Bumped per ingest so a stale upload can't overwrite a newer one. */
+  private ingestSeq = 0;
+  private uploading = false;
+  /** Active document-level drag listener (resize / crop), for cleanup. */
+  private dragMove: ((e: MouseEvent) => void) | null = null;
+  private dragUp: (() => void) | null = null;
+  private boundPaste = (e: ClipboardEvent) => this.handlePaste(e);
+  private boundContextMenu = (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!this.readOnly) this._showContextMenu(this.wrapper!);
+  };
+  private captionHoverShow: (() => void) | null = null;
+  private captionHoverHide: (() => void) | null = null;
+  /** Set by Replace: on the next load keep the width and refit the height
+   *  to the new picture's proportions. */
+  private refitOnLoad = false;
 
-  /** Shared ingest for an uploaded File. If `config.uploader`/`onImageUpload`
-   *  is set the hosted URL is returned; otherwise we fall back to a base64
-   *  data URL via FileReader.readAsDataURL. */
-  private async ingestFile(file: File): Promise<string> {
-    const uploader = this.config?.uploader ?? this.config?.onImageUpload;
+  private get uploader(): ((file: File) => Promise<{ url: string }>) | undefined {
+    const fn = this.config?.uploader ?? this.config?.onImageUpload;
+    return typeof fn === "function" ? fn : undefined;
+  }
+
+  /** Tell Editor.js the block changed (settings live outside the block). */
+  private notifyChange(): void {
+    if (this.destroyed) return;
+    try {
+      this.block?.dispatchChange?.();
+    } catch {
+      /* block already gone */
+    }
+  }
+
+  /** Follow the mouse on `document` until mouseup; one drag at a time. */
+  private trackDrag(onMove: (e: MouseEvent) => void, onEnd?: () => void): void {
+    this.stopDrag();
+    const onUp = () => {
+      this.stopDrag();
+      onEnd?.();
+    };
+    this.dragMove = onMove;
+    this.dragUp = onUp;
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
+
+  private stopDrag(): void {
+    if (this.dragMove) document.removeEventListener("mousemove", this.dragMove);
+    if (this.dragUp) document.removeEventListener("mouseup", this.dragUp);
+    this.dragMove = null;
+    this.dragUp = null;
+  }
+
+  /** Embed a blob as a data: URL the load-time sanitizer will keep
+   *  (raster only). SVG & co. are rasterised to PNG when a canvas exists. */
+  private async embedBlob(blob: Blob): Promise<string> {
+    let data = blob;
+    if (!EMBEDDABLE_TYPES.has((blob.type || "").toLowerCase())) {
+      try {
+        data = await rasterizeToPng(blob);
+      } catch {
+        throw new Error(
+          t("editor.tools.image.typeCantEmbed", {
+            defaultValue: "this image type can't be embedded without an upload server",
+          }),
+        );
+      }
+    }
+    const url = await blobToDataUrl(data);
+    if (!isSafeImageUrl(url)) throw new Error("unsupported image data");
+    return url;
+  }
+
+  /** Upload a file through `config.uploader`. Falls back to a data: URL
+   *  only when there is no uploader, or the upload fails (with a notice). */
+  private async ingestFile(file: File): Promise<IngestResult> {
+    if (!file || !String(file.type || "").startsWith("image/")) {
+      throw new Error(t("editor.tools.image.typeNotAccepted"));
+    }
+    const uploader = this.uploader;
     if (uploader) {
       try {
         const result = await uploader(file);
-        if (result && typeof result.url === "string") return result.url;
+        if (result && typeof result.url === "string" && isSafeImageUrl(result.url)) {
+          return { url: result.url };
+        }
+        throw new Error("uploader returned no usable url");
       } catch (err) {
-        console.warn("ImageTool uploader failed, falling back to data URL:", err);
+        console.warn("ImageTool upload failed, embedding instead:", err);
+        return {
+          url: await this.embedBlob(file),
+          notice: t("editor.tools.image.uploadFailedEmbedded"),
+        };
       }
     }
-    return new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = (e) => resolve(e.target?.result as string);
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(file);
+    return { url: await this.embedBlob(file) };
+  }
+
+  /** Pasted / typed image URL (http, relative, blob: or data:). With an
+   *  uploader the bytes are fetched and re-hosted so the document doesn't
+   *  hot-link; without one, a data: URL keeps the old self-contained
+   *  behaviour. If the bytes can't be fetched (CORS) the URL is kept. */
+  private async ingestUrl(raw: string): Promise<IngestResult> {
+    const url = (raw || "").trim();
+    if (!isSafeImageUrl(url)) {
+      throw new Error(t("editor.tools.image.enterValidUrl"));
+    }
+    const isData = url.toLowerCase().startsWith("data:");
+    let blob: Blob | null = null;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      blob = await res.blob();
+      if (blob.type && !blob.type.startsWith("image/")) {
+        throw new Error(`not an image (${blob.type})`);
+      }
+    } catch (err) {
+      console.warn("ImageTool could not fetch image:", err);
+      blob = null;
+    }
+    if (!blob) {
+      // data: URLs that passed isSafeImageUrl are raster — keep as-is.
+      // blob: URLs die with the page, so they can't be kept.
+      if (isData) return { url };
+      if (url.toLowerCase().startsWith("blob:")) {
+        throw new Error(t("editor.tools.image.failedToLoad"));
+      }
+      return { url, notice: t("editor.tools.image.linkedNotCopied") };
+    }
+    const uploader = this.uploader;
+    if (uploader) {
+      const type = blob.type || "image/png";
+      const ext = (type.split("/")[1] || "png").replace("jpeg", "jpg").replace(/\+.*/, "");
+      const name =
+        (!isData && url.split(/[?#]/)[0].split("/").pop()) || `pasted-image.${ext}`;
+      const file = new File([blob], name, { type });
+      return this.ingestFile(file);
+    }
+    if (isData) return { url };
+    try {
+      return { url: await this.embedBlob(blob) };
+    } catch {
+      return { url, notice: t("editor.tools.image.linkedNotCopied") };
+    }
+  }
+
+  /**
+   * Run an ingest with UI: uploading state while it runs, the image (plus
+   * any fallback notice) on success, and on failure the previous picture
+   * or the upload prompt with an error — never a broken block. Never
+   * rejects.
+   */
+  private async runIngest(
+    work: () => Promise<IngestResult>,
+    opts: { replace?: boolean } = {},
+  ): Promise<void> {
+    const seq = ++this.ingestSeq;
+    const previousUrl = this.data.url;
+    this.setUploading(true);
+    let result: IngestResult | null = null;
+    let error: unknown = null;
+    try {
+      result = await work();
+    } catch (err) {
+      error = err;
+    }
+    if (this.destroyed || seq !== this.ingestSeq) return;
+    this.setUploading(false);
+    if (result && result.url) {
+      if (opts.replace || previousUrl) {
+        // A new picture: the old crop is meaningless, keep the width and
+        // let the height follow the new picture's proportions.
+        this.data.crop = undefined;
+        this.refitOnLoad = parsePx(this.data.width) > 0;
+        this.data.originalUrl = result.url;
+      }
+      this.data.url = result.url;
+      if (!this.data.originalUrl) this.data.originalUrl = result.url;
+      this.createImage();
+      if (result.notice) this.showNotice(result.notice, "warning");
+      this.notifyChange();
+      return;
+    }
+    const reason =
+      error instanceof Error && error.message ? error.message : String(error ?? "unknown error");
+    console.warn("ImageTool ingest failed:", error);
+    if (previousUrl) this.createImage();
+    else this.createUploadUI();
+    this.showNotice(t("editor.tools.image.uploadFailed", { reason }), "error");
+  }
+
+  /** Uploading overlay (over the picture) or placeholder (empty block). */
+  private setUploading(on: boolean): void {
+    this.uploading = on;
+    if (!this.wrapper) return;
+    this.wrapper.classList.toggle("tp-image--uploading", on);
+    this.wrapper.setAttribute("aria-busy", on ? "true" : "false");
+    this.wrapper.querySelectorAll("[data-image-uploading]").forEach((el) => el.remove());
+    if (!on) return;
+    this.wrapper.querySelectorAll("[data-image-notice]").forEach((el) => el.remove());
+    const status = document.createElement("div");
+    status.setAttribute("data-image-uploading", "true");
+    status.setAttribute("role", "status");
+    status.className = "tp-image__status";
+    const spinner = document.createElement("span");
+    spinner.className = "tp-image__spinner";
+    spinner.setAttribute("aria-hidden", "true");
+    const label = document.createElement("span");
+    label.textContent = t("editor.tools.image.uploading");
+    status.append(spinner, label);
+    if (this.data.url && this.imageContainer && this.wrapper.contains(this.imageContainer)) {
+      status.classList.add("tp-image__status--overlay");
+      this.imageContainer.appendChild(status);
+    } else {
+      this.wrapper.innerHTML = "";
+      this.wrapper.appendChild(status);
+    }
+  }
+
+  /** Inline message under the image. Not saved. */
+  private showNotice(message: string, kind: "warning" | "error"): void {
+    if (!this.wrapper || this.destroyed) return;
+    this.wrapper.querySelectorAll("[data-image-notice]").forEach((el) => el.remove());
+    const notice = document.createElement("div");
+    notice.setAttribute("data-image-notice", kind);
+    notice.setAttribute("role", kind === "error" ? "alert" : "status");
+    notice.className = `tp-image__msg tp-image__msg--${kind}`;
+    notice.contentEditable = "false";
+    const text = document.createElement("span");
+    text.textContent = message;
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "tp-image__msg-close";
+    close.textContent = "✕";
+    close.title = t("editor.tools.image.dismiss", { defaultValue: "Dismiss" });
+    close.addEventListener("click", (e) => {
+      e.stopPropagation();
+      notice.remove();
     });
+    notice.append(text, close);
+    this.wrapper.appendChild(notice);
+  }
+
+  /** Width / height ratio to preserve: current box, else natural size. */
+  private currentAspect(): number {
+    const w = parsePx(this.data.width);
+    const h = parsePx(this.data.height);
+    if (w && h) return w / h;
+    const img = this.imageContainer?.querySelector("img") as HTMLImageElement | null;
+    if (img && img.naturalWidth && img.naturalHeight) return img.naturalWidth / img.naturalHeight;
+    return 1;
+  }
+
+  /** Single place that resizes the picture (settings fields, presets). */
+  private setImageSize(w: number, h: number): void {
+    this.data.width = `${Math.round(w)}px`;
+    this.data.height = `${Math.round(h)}px`;
+    const img = this.imageContainer?.querySelector("img") as HTMLImageElement | null;
+    if (img) {
+      img.style.width = this.data.width;
+      img.style.height = this.data.height;
+    }
+    this.applyCropIfAny();
+    this.updateResizeHandles();
+    this.syncWrapContract();
+  }
+
+  /**
+   * Root-class contract for the paginator / editor CSS: exactly one
+   * `tp-image--{inline|top-bottom|float-left|float-right}` class, and for
+   * floats `--tp-image-width` = the horizontal space the image occupies.
+   */
+  private syncWrapContract(): void {
+    if (!this.wrapper) return;
+    const mode = imageWrapMode(this.data);
+    for (const cls of Object.values(IMAGE_WRAP_CLASSES)) {
+      this.wrapper.classList.toggle(cls, cls === IMAGE_WRAP_CLASSES[mode]);
+    }
+    this.wrapper.dataset.wrap = mode;
+    if (mode === "float-left" || mode === "float-right") {
+      this.wrapper.style.setProperty("--tp-image-width", `${this.occupiedWidth()}px`);
+    } else {
+      this.wrapper.style.removeProperty("--tp-image-width");
+    }
+  }
+
+  /** Visible (crop-aware) width + horizontal margins + border. */
+  private occupiedWidth(): number {
+    let w = parsePx(this.data.width);
+    if (!w) {
+      const img = this.imageContainer?.querySelector("img") as HTMLImageElement | null;
+      w = img?.naturalWidth || 0;
+    }
+    const crop = this.data.crop;
+    if (crop) w = w * (1 - ((crop.left || 0) + (crop.right || 0)) / 100);
+    const tune = this.data.tunes?.imageTune || {};
+    const border = this.data.border && this.data.border.style !== "none"
+      ? parsePx(this.data.border.width || "1px")
+      : 0;
+    const total = w + parsePx(tune.marginLeft) + parsePx(tune.marginRight) + border * 2;
+    return Math.min(this.MAX_PARENT_WIDTH, Math.max(0, Math.round(total)));
   }
 
   private parseDimension(value: any): string {
     if (!value) return "auto";
 
     if (typeof value === "number") {
-      return `${value}px`;
+      return Number.isFinite(value) && value > 0 ? `${Math.round(value * 100) / 100}px` : "auto";
     }
+    // "0px" (written by older saves of an unloaded image) means unknown.
+    if (typeof value === "string" && parsePx(value) === 0) return "auto";
 
     if (typeof value === "string") {
       if (
@@ -1832,57 +2327,75 @@ export default class ImageTool {
     config,
     api,
     readOnly = false,
+    block,
   }: {
     data: any;
     config: any;
     api: any;
     readOnly?: boolean;
+    block?: any;
   }) {
     this.api = api;
     this.readOnly = readOnly;
     this.config = config || {};
+    this.block = block ?? null;
+    data = data && typeof data === "object" ? data : {};
 
-    let width = "auto";
-    let height = "auto";
+    // `file.url` is what save() writes; `url` is older data / the DOCX
+    // importer / stock @editorjs/image — accept either.
+    const url =
+      (typeof data.file?.url === "string" && data.file.url) ||
+      (typeof data.url === "string" && data.url) ||
+      "";
 
-    if (data.dimensions) {
-      if (typeof data.dimensions === "object") {
-        if (data.dimensions.width && data.dimensions.height) {
-          width = `${data.dimensions.width}px`;
-          height = `${data.dimensions.height}px`;
-        }
-      } else if (typeof data.dimensions.width === "string") {
-        width = data.dimensions.width;
-        height = data.dimensions.height;
-      }
+    const savedTunes = data.tunes && typeof data.tunes === "object" ? data.tunes : {};
+    const savedImageTune =
+      savedTunes.imageTune && typeof savedTunes.imageTune === "object"
+        ? savedTunes.imageTune
+        : {};
+    const tunes: any = {
+      ...savedTunes,
+      imageTune: {
+        float: "inline",
+        wrapText: "top-bottom",
+        position: "inline",
+        marginTop: "0px",
+        marginRight: "0px",
+        marginBottom: "0px",
+        marginLeft: "0px",
+        ...savedImageTune,
+      },
+    };
+    // Alignment stays undefined unless chosen: the block-level alignment
+    // tune then shows through via inherited text-align.
+    if (savedTunes.alignment && typeof savedTunes.alignment === "object") {
+      tunes.alignment = { ...savedTunes.alignment };
     }
 
-    if (data.width && data.height) {
-      if (typeof data.width === "number") {
-        width = `${data.width}px`;
-        height = `${data.height}px`;
-      } else if (typeof data.width === "string") {
-        width = data.width;
-        height = data.height;
-      }
-    }
+    const filters =
+      data.filters && typeof data.filters === "object" ? data.filters : {};
+    const num = (v: unknown, d: number) =>
+      typeof v === "number" && Number.isFinite(v) ? v : d;
 
     this.data = {
-      url: data.file?.url || data.url || "",
-      caption: data.caption || "",
-      width: this.parseDimension(data.dimensions?.width || data.width),
-      height: this.parseDimension(data.dimensions?.height || data.height),
-      rotation: data.rotation || 0,
-      aspectRatio: data.aspectRatio || "free",
-      flipX: data.flipX || false,
-      flipY: data.flipY || false,
-      zoom: data.zoom || 1,
-      altText: data.altText || "",
-      border: data.border || undefined,
+      url,
+      caption: typeof data.caption === "string" ? data.caption : "",
+      width: this.parseDimension(data.dimensions?.width ?? data.width),
+      height: this.parseDimension(data.dimensions?.height ?? data.height),
+      rotation: normalizeRotation(data.rotation),
+      aspectRatio: typeof data.aspectRatio === "string" ? data.aspectRatio : "free",
+      flipX: data.flipX === true,
+      flipY: data.flipY === true,
+      zoom: num(data.zoom, 1) > 0 ? num(data.zoom, 1) : 1,
+      altText: typeof data.altText === "string" ? data.altText : "",
+      border:
+        data.border && typeof data.border === "object" && data.border.style
+          ? { ...data.border }
+          : undefined,
       // originalUrl is captured once (on first render if missing). Legacy
       // blocks won't have it in storage; Reset still works for them by
       // falling back to the current url.
-      originalUrl: data.originalUrl || data.file?.url || data.url || "",
+      originalUrl: (typeof data.originalUrl === "string" && data.originalUrl) || url,
       // Default OFF: a brand-new image or one coming from an older save
       // (no showCaption key) renders without any caption chrome. If the
       // doc stored a caption string though, treat that as implicit opt-in
@@ -1891,32 +2404,24 @@ export default class ImageTool {
         typeof data.showCaption === "boolean"
           ? data.showCaption
           : !!(data.caption && String(data.caption).trim()),
-      crop: data.crop || undefined,
-      link: data.link || undefined,
+      crop: data.crop && typeof data.crop === "object" ? { ...data.crop } : undefined,
+      link:
+        data.link && typeof data.link === "object" && data.link.url
+          ? { url: data.link.url, openInNewTab: data.link.openInNewTab !== false }
+          : undefined,
       shadow: data.shadow || "none",
-      filters: data.filters || {
-        brightness: 100,
-        contrast: 100,
-        saturation: 100,
+      filters: {
+        brightness: num(filters.brightness, 100),
+        contrast: num(filters.contrast, 100),
+        saturation: num(filters.saturation, 100),
       },
       shape: data.shape || "rectangle",
-      tunes: data.tunes || {
-        alignment: { alignment: "left" },
-        imageTune: {
-          float: "inline",
-          wrapText: "square",
-          position: "inline",
-          marginTop: "0px",
-          marginRight: "0px",
-          marginBottom: "0px",
-          marginLeft: "0px",
-        },
-      },
+      tunes,
     };
     this.wrapper = null;
     this.imageContainer = null;
     this.resizeHandles = [];
-    this.completedPreview = config.isEditable || false;
+    this.completedPreview = !!this.config.isEditable;
   }
 
   private isCompleteMode(): boolean {
@@ -1932,141 +2437,74 @@ export default class ImageTool {
 
   render(): HTMLElement {
     this.wrapper = document.createElement("div");
-    this.wrapper.classList.add("image-tool-wrapper");
+    this.wrapper.classList.add("image-tool-wrapper", "tp-image");
     this.wrapper.style.maxWidth = `${this.MAX_PARENT_WIDTH}px`;
     this.wrapper.style.margin = "0 auto";
 
-    this.applyTunesStyles();
-
-    if (!this.isCompleteMode()) {
-      this.wrapper.addEventListener("paste", this.handlePaste.bind(this));
+    if (!this.isCompleteMode() && !this.readOnly) {
+      this.wrapper.addEventListener("paste", this.boundPaste);
     }
-
-    // Add right-click context menu
-    this.wrapper.addEventListener("contextmenu", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (!this.readOnly) {
-        this._showContextMenu(this.wrapper!);
-      }
-    });
+    // Right-click opens the settings panel (editable only; read-only
+    // views keep the browser's own menu).
+    if (!this.readOnly) {
+      this.wrapper.addEventListener("contextmenu", this.boundContextMenu);
+    }
 
     if (this.data.url) {
       this.createImage();
     } else {
       this.createUploadUI();
     }
+    this.applyTunesStyles();
 
     return this.wrapper;
   }
 
+  /**
+   * Alignment + margins + the wrap contract. Layout of floats is NOT done
+   * here — see syncWrapContract: the editor floats the whole `.ce-block`.
+   */
   private applyTunesStyles(): void {
     if (!this.wrapper) return;
 
-    const alignment = this.data.tunes?.alignment?.alignment || "left";
-    const float = this.data.tunes?.imageTune?.float || "inline";
-    const wrapText = this.data.tunes?.imageTune?.wrapText || "none";
-
+    const alignment = this.data.tunes?.alignment?.alignment;
     this.wrapper.style.display = "block";
-    this.wrapper.style.justifyContent = "";
+    // Explicit alignment from the settings panel; otherwise inherit (the
+    // block-level alignment tune sets text-align on .ce-block__content).
+    this.wrapper.style.textAlign =
+      alignment === "center" || alignment === "right" || alignment === "left" ? alignment : "";
 
+    this.syncWrapContract();
     if (!this.imageContainer) return;
 
-    // Centered images always take the inline centering branch — even
-    // when wrapText is "square"/"tight"/"through" — because the wrap
-    // branch below hard-codes float from a variable that can be the
-    // sentinel "inline" (not a valid CSS float), leaving the image
-    // block-display with no `text-align: center` or `margin: auto`.
-    // The visible failure: a DOCX-centered image lands to one side of
-    // the page. Same fix protects right-aligned images from the same
-    // no-op float path. Left-aligned wrapped images still hit the
-    // real wrap branch since float="left" is a legitimate CSS value.
-    const centeringOverride =
-      alignment === "center" || (alignment === "right" && float !== "right");
-
-    if (
-      wrapText !== "inline" &&
-      wrapText !== "none" &&
-      wrapText !== "top-bottom" &&
-      !centeringOverride
-    ) {
-      this.imageContainer.style.float = float;
-      this.imageContainer.style.display = "block";
-
-      if (wrapText === "tight") {
-        this.imageContainer.style.margin =
-          float === "left" ? "0 12px 12px 0" : "0 0 12px 12px";
-      } else if (wrapText === "through") {
-        this.imageContainer.style.margin =
-          float === "left" ? "0 8px 8px 0" : "0 0 8px 8px";
-      } else if (wrapText === "square") {
-        this.imageContainer.style.margin =
-          float === "left" ? "0 16px 16px 0" : "0 0 16px 16px";
-      }
-    } else if (wrapText === "top-bottom") {
-      this.imageContainer.style.float = "none";
-      this.imageContainer.style.display = "block";
-      this.imageContainer.style.margin = "12px auto";
-
-      if (alignment === "center") {
-        this.imageContainer.style.marginLeft = "auto";
-        this.imageContainer.style.marginRight = "auto";
-      } else if (alignment === "right") {
-        this.imageContainer.style.marginLeft = "auto";
-        this.imageContainer.style.marginRight = "0";
-      } else {
-        this.imageContainer.style.marginLeft = "0";
-        this.imageContainer.style.marginRight = "auto";
-      }
-    } else {
-      this.imageContainer.style.float = "none";
-      this.imageContainer.style.display = "inline-block";
-      this.imageContainer.style.margin = "0";
-
-      if (alignment === "center") {
-        this.wrapper.style.textAlign = "center";
-      } else if (alignment === "right") {
-        this.wrapper.style.textAlign = "right";
-      } else {
-        this.wrapper.style.textAlign = "left";
-      }
-    }
-
-    const margins = this.data.tunes?.imageTune;
-    if (margins) {
-      if (margins.marginTop)
-        this.imageContainer.style.marginTop = margins.marginTop;
-      if (margins.marginRight)
-        this.imageContainer.style.marginRight = margins.marginRight;
-      if (margins.marginBottom)
-        this.imageContainer.style.marginBottom = margins.marginBottom;
-      if (margins.marginLeft)
-        this.imageContainer.style.marginLeft = margins.marginLeft;
-    }
+    this.imageContainer.style.float = "";
+    this.imageContainer.style.display = "inline-block";
+    this.imageContainer.style.verticalAlign = "top";
+    const m = this.data.tunes?.imageTune || {};
+    this.imageContainer.style.marginTop = m.marginTop || "0px";
+    this.imageContainer.style.marginRight = m.marginRight || "0px";
+    this.imageContainer.style.marginBottom = m.marginBottom || "0px";
+    this.imageContainer.style.marginLeft = m.marginLeft || "0px";
   }
 
   private setAlignment(alignment: string): void {
     if (!this.data.tunes) this.data.tunes = {};
     if (!this.data.tunes.alignment) this.data.tunes.alignment = {};
     this.data.tunes.alignment.alignment = alignment;
+    if (!this.data.tunes.imageTune) this.data.tunes.imageTune = {};
+    const tune = this.data.tunes.imageTune;
 
-    const wrapText = this.data.tunes?.imageTune?.wrapText;
-    if (
-      wrapText &&
-      wrapText !== "inline" &&
-      wrapText !== "none" &&
-      wrapText !== "top-bottom"
-    ) {
-      if (!this.data.tunes.imageTune) this.data.tunes.imageTune = {};
-
-      if (alignment === "right") {
-        this.data.tunes.imageTune.float = "right";
+    if (FLOAT_WRAPS.has(tune.wrapText)) {
+      if (alignment === "center") {
+        // A float can't be centred — centring means top & bottom wrap.
+        tune.wrapText = "top-bottom";
+        tune.float = "inline";
       } else {
-        this.data.tunes.imageTune.float = "left";
+        tune.float = alignment === "right" ? "right" : "left";
       }
     }
-
     this.applyTunesStyles();
+    this.notifyChange();
   }
 
   private setFloat(floatValue: string): void {
@@ -2074,55 +2512,51 @@ export default class ImageTool {
     if (!this.data.tunes.imageTune) this.data.tunes.imageTune = {};
     this.data.tunes.imageTune.float = floatValue;
     this.applyTunesStyles();
+    this.notifyChange();
   }
 
   private setMargin(marginKey: string, value: string): void {
     if (!this.data.tunes) this.data.tunes = {};
     if (!this.data.tunes.imageTune) this.data.tunes.imageTune = {};
-
-    if (
-      value &&
-      !isNaN(parseFloat(value)) &&
-      !value.includes("px") &&
-      !value.includes("em") &&
-      !value.includes("%")
-    ) {
-      value = `${value}px`;
-    }
-
-    this.data.tunes.imageTune[marginKey] = value || "0px";
+    // Numbers only, clamped; anything unparsable becomes 0px (it used to
+    // store e.g. "px" from an emptied number field).
+    const n = parseFloat(String(value ?? ""));
+    const px = Number.isFinite(n) ? Math.max(-200, Math.min(400, Math.round(n))) : 0;
+    this.data.tunes.imageTune[marginKey] = `${px}px`;
     this.applyTunesStyles();
+    this.notifyChange();
   }
 
   private handlePaste(event: ClipboardEvent): void {
-    event.preventDefault();
+    const target = event.target as HTMLElement | null;
+    // Let inputs (URL field, panel fields) paste natively.
+    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
 
     const clipboardData = event.clipboardData;
     if (!clipboardData) return;
 
-    const items = clipboardData.items;
+    const items = clipboardData.items || [];
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      if (item && item.type.indexOf("image") !== -1) {
+      if (item && item.kind !== "string" && item.type.indexOf("image") !== -1) {
         const file = item.getAsFile();
         if (file) {
-          void this.ingestFile(file).then((url) => {
-            this.data.url = url;
-            this.createImage();
-          });
           event.preventDefault();
-          break;
+          event.stopPropagation();
+          void this.runIngest(() => this.ingestFile(file), { replace: !!this.data.url });
+          return;
         }
       }
     }
 
-    const pastedText = clipboardData.getData("text");
-    if (pastedText) {
-      const imageUrlPattern = /https?:\/\/.*\.(?:jpe?g|png|gif|bmp|webp)/i;
-      if (imageUrlPattern.test(pastedText)) {
-        this.ingestImageUrl(pastedText, () => this.createImage());
-        event.preventDefault();
-      }
+    // Text pasted into the caption stays text.
+    if (target?.closest?.("[data-image-caption]")) return;
+
+    const pastedText = (clipboardData.getData("text") || "").trim();
+    if (pastedText && IMAGE_URL_PATTERN.test(pastedText) && !/\s/.test(pastedText)) {
+      event.preventDefault();
+      event.stopPropagation();
+      void this.runIngest(() => this.ingestUrl(pastedText), { replace: !!this.data.url });
     }
   }
 
@@ -2307,6 +2741,10 @@ export default class ImageTool {
     // Clear any previous caption element + hover listeners before re-render.
     this.wrapper.querySelectorAll("[data-image-caption]").forEach((el) => el.remove());
     this.wrapper.querySelectorAll("[data-image-caption-ghost]").forEach((el) => el.remove());
+    if (this.captionHoverShow) this.wrapper.removeEventListener("mouseenter", this.captionHoverShow);
+    if (this.captionHoverHide) this.wrapper.removeEventListener("mouseleave", this.captionHoverHide);
+    this.captionHoverShow = null;
+    this.captionHoverHide = null;
 
     // Caption disabled by the admin → render nothing, no hover ghost either.
     if (!this.data.showCaption) return;
@@ -2330,6 +2768,10 @@ export default class ImageTool {
       `;
       caption.addEventListener("focus", () => {
         caption.style.color = "#374151";
+      });
+      // Keep data in step while typing so a save mid-edit isn't stale.
+      caption.addEventListener("input", () => {
+        this.data.caption = caption.textContent || "";
       });
       caption.addEventListener("blur", () => {
         this.data.caption = (caption.textContent || "").trim();
@@ -2378,6 +2820,8 @@ export default class ImageTool {
       ghost.style.opacity = "0";
       ghost.style.pointerEvents = "none";
     };
+    this.captionHoverShow = show;
+    this.captionHoverHide = hide;
     this.wrapper.addEventListener("mouseenter", show);
     this.wrapper.addEventListener("mouseleave", hide);
 
@@ -2401,6 +2845,9 @@ export default class ImageTool {
         min-height: 1em;
         outline: none;
       `;
+      live.addEventListener("input", () => {
+        this.data.caption = live.textContent || "";
+      });
       this.wrapper!.appendChild(live);
       live.focus();
       live.addEventListener("blur", () => {
@@ -2471,10 +2918,18 @@ export default class ImageTool {
     };
 
     image.onload = () => {
+      if (this.destroyed) return;
       const naturalWidth = image.naturalWidth;
       const naturalHeight = image.naturalHeight;
 
-      if (
+      if (this.refitOnLoad && naturalWidth && naturalHeight) {
+        // Replaced picture: keep the chosen width, follow its proportions.
+        this.refitOnLoad = false;
+        const w = parsePx(this.data.width);
+        this.data.height = `${Math.max(1, Math.round((w * naturalHeight) / naturalWidth))}px`;
+        image.style.width = this.data.width;
+        image.style.height = this.data.height;
+      } else if (
         widthValue === "auto" ||
         heightValue === "auto" ||
         !widthValue ||
@@ -2527,7 +2982,9 @@ export default class ImageTool {
       }
 
       this.applyTransformation(image);
+      this.applyCropIfAny();
       this.updateResizeHandles();
+      this.syncWrapContract();
     };
 
     this.applyTransformation(image);
@@ -2553,41 +3010,7 @@ export default class ImageTool {
       this.createResizeHandles();
       this.applyAspectRatio();
     }
-  }
-
-  // Fetch an external image URL and convert it to a self-contained base64 data
-  // URL so the image can't later 404 / get deleted / CORS-fail on reopen. Falls
-  // back to storing the original URL when the fetch is blocked (e.g. CORS).
-  private ingestImageUrl(url: string, onReady: () => void): void {
-    if (typeof url !== "string" || url.startsWith("data:")) {
-      this.data.url = url;
-      onReady();
-      return;
-    }
-
-    fetch(url)
-      .then((res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.blob();
-      })
-      .then(
-        (blob) =>
-          new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result as string);
-            reader.onerror = () => reject(reader.error);
-            reader.readAsDataURL(blob);
-          }),
-      )
-      .then((dataUrl) => {
-        this.data.url = dataUrl;
-        onReady();
-      })
-      .catch((err) => {
-        console.warn("Could not ingest external image, using URL as-is:", err);
-        this.data.url = url;
-        onReady();
-      });
+    this.syncWrapContract();
   }
 
   private showImageError(): void {
@@ -2804,8 +3227,10 @@ export default class ImageTool {
     const image = this.imageContainer.querySelector("img") as HTMLImageElement;
     if (!image) return;
 
-    if (this.data.aspectRatio !== "free") {
-      const [w, h] = this.data.aspectRatio.split(":").map(Number);
+    const preset = /^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/.exec(String(this.data.aspectRatio || ""));
+    if (preset && Number(preset[1]) > 0 && Number(preset[2]) > 0) {
+      const w = Number(preset[1]);
+      const h = Number(preset[2]);
       const currentWidth =
         parseInt(image.style.width, 10) || image.naturalWidth || 300;
 
@@ -2821,6 +3246,7 @@ export default class ImageTool {
       this.data.height = `${newHeight}px`;
     }
     this.updateResizeHandles();
+    this.syncWrapContract();
   }
 
   startResize(event: MouseEvent, position: string): void {
@@ -2836,7 +3262,9 @@ export default class ImageTool {
     const startHeight = image.offsetHeight;
 
     const aspectRatio =
-      this.data.aspectRatio !== "free" ? startWidth / startHeight : null;
+      this.data.aspectRatio && this.data.aspectRatio !== "free" && startHeight
+        ? startWidth / startHeight
+        : null;
 
     const onMouseMove = (e: MouseEvent) => {
       let newWidth = startWidth;
@@ -2883,215 +3311,13 @@ export default class ImageTool {
       this.data.width = `${newWidth}px`;
       this.data.height = `${newHeight}px`;
 
+      this.applyCropIfAny();
       this.updateResizeHandles();
+      this.syncWrapContract();
     };
 
-    const onMouseUp = () => {
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-    };
-
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
+    this.trackDrag(onMouseMove, () => this.notifyChange());
   }
-
-  // createUploadUI(): void {
-  //   if (!this.wrapper) return;
-
-  //   this.wrapper.innerHTML = "";
-
-  //   if (this.isCompleteMode()) {
-  //     const messageContainer = document.createElement("div");
-  //     messageContainer.style.textAlign = "center";
-  //     messageContainer.style.padding = "20px";
-  //     messageContainer.style.color = "#667085";
-  //     messageContainer.style.fontStyle = "italic";
-  //     messageContainer.innerText = t("editor.tools.image.imagePreview");
-  //     this.wrapper.appendChild(messageContainer);
-  //     return;
-  //   }
-
-  //   const uploadContainer = document.createElement("div");
-  //   uploadContainer.style.textAlign = "center";
-  //   uploadContainer.style.padding = "32px 24px";
-  //   uploadContainer.style.border = "2px dashed #d0d5dd";
-  //   uploadContainer.style.borderRadius = "12px";
-  //   uploadContainer.style.backgroundColor = "#f8f9fa";
-  //   uploadContainer.style.transition = "all 0.2s ease";
-
-  //   uploadContainer.addEventListener("mouseenter", () => {
-  //     uploadContainer.style.borderColor = "#4086FF";
-  //     uploadContainer.style.backgroundColor = "#f0f8ff";
-  //   });
-  //   uploadContainer.addEventListener("mouseleave", () => {
-  //     uploadContainer.style.borderColor = "#d0d5dd";
-  //     uploadContainer.style.backgroundColor = "#f8f9fa";
-  //   });
-
-  //   const uploadIcon = document.createElement("div");
-  //   uploadIcon.innerHTML = `
-  //     <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#667085" stroke-width="1.5">
-  //       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-  //       <polyline points="17 8 12 3 7 8"></polyline>
-  //       <line x1="12" y1="3" x2="12" y2="15"></line>
-  //     </svg>
-  //   `;
-  //   uploadIcon.style.marginBottom = "20px";
-
-  //   const title = document.createElement("div");
-  //   title.textContent = "Upload Image";
-  //   title.style.fontSize = "18px";
-  //   title.style.fontWeight = "600";
-  //   title.style.color = "#344054";
-  //   title.style.marginBottom = "8px";
-
-  //   const description = document.createElement("div");
-  //   description.textContent = "Upload or paste image from URL";
-  //   description.style.fontSize = "14px";
-  //   description.style.color = "#667085";
-  //   description.style.marginBottom = "24px";
-
-  //   const uploadButton = this.createButton("Choose File", () => {
-  //     const input = document.createElement("input");
-  //     input.type = "file";
-  //     input.accept = "image/jpeg,image/jpg,image/png";
-  //     input.addEventListener("change", (event: Event) => {
-  //       const inputTarget = event.target as HTMLInputElement;
-  //       const file = inputTarget.files?.[0];
-  //       const allowed = ["image/jpeg", "image/jpg", "image/png"];
-  //       if (!allowed.includes(file.type)) {
-  //         failedPopper(t("editor.tools.image.typeNotAccepted"));
-  //         return;
-  //       }
-  //       if (file) {
-  //         const reader = new FileReader();
-  //         reader.onload = (e: ProgressEvent<FileReader>) => {
-  //           this.data.url = e.target!.result as string;
-  //           this.createImage();
-  //         };
-  //         reader.readAsDataURL(file);
-  //       }
-  //     });
-  //     input.click();
-  //   });
-
-  //   uploadButton.style.marginBottom = "16px";
-  //   uploadButton.style.width = "100%";
-  //   uploadButton.style.maxWidth = "200px";
-  //   uploadButton.style.marginLeft = "auto";
-  //   uploadButton.style.marginRight = "auto";
-
-  //   const separator = document.createElement("div");
-  //   separator.style.display = "flex";
-  //   separator.style.alignItems = "center";
-  //   separator.style.margin = "16px 0";
-
-  //   const line = document.createElement("div");
-  //   line.style.flex = "1";
-  //   line.style.height = "1px";
-  //   line.style.backgroundColor = "#e1e5e9";
-
-  //   const orText = document.createElement("span");
-  //   orText.textContent = "OR";
-  //   orText.style.padding = "0 12px";
-  //   orText.style.fontSize = "12px";
-  //   orText.style.color = "#667085";
-  //   orText.style.backgroundColor = "#f8f9fa";
-
-  //   separator.appendChild(line.cloneNode());
-  //   separator.appendChild(orText);
-  //   separator.appendChild(line.cloneNode());
-
-  //   const urlSection = document.createElement("div");
-  //   urlSection.style.textAlign = "left";
-  //   urlSection.style.marginBottom = "16px";
-
-  //   const urlLabel = document.createElement("label");
-  //   urlLabel.textContent = "Paste Image URL";
-  //   urlLabel.style.display = "block";
-  //   urlLabel.style.fontSize = "14px";
-  //   urlLabel.style.fontWeight = "500";
-  //   urlLabel.style.color = "#344054";
-  //   urlLabel.style.marginBottom = "8px";
-
-  //   const urlInputContainer = document.createElement("div");
-  //   urlInputContainer.style.display = "flex";
-  //   urlInputContainer.style.gap = "8px";
-
-  //   const urlInput = document.createElement("input");
-  //   urlInput.type = "text";
-  //   urlInput.placeholder = "https://example.com/image.jpg";
-  //   urlInput.style.flex = "1";
-  //   urlInput.style.padding = "10px 12px";
-  //   urlInput.style.border = "1px solid #d0d5dd";
-  //   urlInput.style.borderRadius = "6px";
-  //   urlInput.style.fontSize = "14px";
-  //   urlInput.style.color = "#344054";
-  //   urlInput.style.fontFamily = "inherit";
-
-  //   const loadButton = this.createButton(t("editor.tools.image.load"), () => {
-  //     const url = urlInput.value.trim();
-  //     if (!url) {
-  //       failedPopper(t("editor.tools.image.enterUrl"));
-  //       return;
-  //     }
-
-  //     const imageUrlPattern = /https?:\/\/.*\.(?:jpe?g|png|gif|bmp|webp)/i;
-  //     if (!imageUrlPattern.test(url)) {
-  //       failedPopper(
-  //         t("editor.tools.image.enterValidUrl")
-  //       );
-  //       return;
-  //     }
-
-  //     this.data.url = url;
-  //     this.createImage();
-  //   });
-  //   loadButton.style.whiteSpace = "nowrap";
-
-  //   urlInput.addEventListener("keypress", (e) => {
-  //     if (e.key === "Enter") {
-  //       loadButton.click();
-  //     }
-  //   });
-
-  //   urlInput.addEventListener("focus", () => {
-  //     urlInput.style.borderColor = "#4086FF";
-  //     urlInput.style.boxShadow = "0 0 0 3px rgba(64, 134, 255, 0.1)";
-  //   });
-
-  //   urlInput.addEventListener("blur", () => {
-  //     urlInput.style.borderColor = "#d0d5dd";
-  //     urlInput.style.boxShadow = "none";
-  //   });
-
-  //   urlInputContainer.appendChild(urlInput);
-  //   urlInputContainer.appendChild(loadButton);
-
-  //   urlSection.appendChild(urlLabel);
-  //   urlSection.appendChild(urlInputContainer);
-
-  //   const instructions = document.createElement("div");
-  //   instructions.style.fontSize = "12px";
-  //   instructions.style.color = "#667085";
-  //   instructions.style.marginTop = "8px";
-  //   instructions.style.textAlign = "center";
-  //   instructions.innerHTML = `
-  //     <div style="margin-bottom: 4px;">Supported formats: JPG, PNG, GIF, BMP, WebP</div>
-  //     <div>Press <kbd style="padding: 2px 6px; background: #f3f4f6; border-radius: 4px; font-size: 11px; border: 1px solid #d1d5db;">Ctrl+V</kbd> to paste image or URL</div>
-  //   `;
-
-  //   uploadContainer.addEventListener("paste", this.handlePaste.bind(this));
-
-  //   uploadContainer.appendChild(uploadIcon);
-  //   uploadContainer.appendChild(title);
-  //   uploadContainer.appendChild(description);
-  //   uploadContainer.appendChild(uploadButton);
-  //   uploadContainer.appendChild(separator);
-  //   uploadContainer.appendChild(urlSection);
-
-  //   this.wrapper.appendChild(uploadContainer);
-  // }
 
   createUploadUI(): void {
     if (!this.wrapper) return;
@@ -3172,19 +3398,16 @@ export default class ImageTool {
       () => {
         const input = document.createElement("input");
         input.type = "file";
-        input.accept = "image/jpeg,image/jpg,image/png";
+        input.accept = ACCEPT_TYPES;
         input.addEventListener("change", (event: Event) => {
           const inputTarget = event.target as HTMLInputElement;
           const file = inputTarget.files?.[0];
-          const allowed = ["image/jpeg", "image/jpg", "image/png"];
-          if (!file || !allowed.includes(file.type)) {
-            failedPopper(t("editor.tools.image.typeNotAccepted"));
+          if (!file) return;
+          if (!String(file.type).startsWith("image/")) {
+            this.showNotice(t("editor.tools.image.typeNotAccepted"), "error");
             return;
           }
-          void this.ingestFile(file).then((url) => {
-            this.data.url = url;
-            this.createImage();
-          });
+          void this.runIngest(() => this.ingestFile(file));
         });
         input.click();
       },
@@ -3240,12 +3463,12 @@ export default class ImageTool {
           failedPopper(t("editor.tools.image.enterUrl"));
           return;
         }
-        const imageUrlPattern = /https?:\/\/.*\.(?:jpe?g|png|gif|bmp|webp)/i;
-        if (!imageUrlPattern.test(url)) {
+        if (!isSafeImageUrl(url) || url.toLowerCase().startsWith("data:")) {
           failedPopper(t("editor.tools.image.enterValidUrl"));
+          this.showNotice(t("editor.tools.image.enterValidUrl"), "error");
           return;
         }
-        this.ingestImageUrl(url, () => this.createImage());
+        void this.runIngest(() => this.ingestUrl(url));
       },
     );
     loadButton.style.padding = "7px 12px";
@@ -3293,13 +3516,36 @@ export default class ImageTool {
 
     // Supported format hint — small, muted, one line.
     const formats = document.createElement("div");
-    formats.textContent = "JPG · PNG · GIF · BMP · WebP";
+    formats.textContent = "JPG · PNG · GIF · BMP · WebP · SVG";
     formats.style.fontSize = "11px";
     formats.style.color = "#98a2b3";
     formats.style.letterSpacing = "0.2px";
     formats.style.marginTop = "2px";
 
-    uploadContainer.addEventListener("paste", this.handlePaste.bind(this));
+    // Focusable so a click + Ctrl/Cmd+V lands on this block (the wrapper's
+    // paste listener handles it). Drops are handled here so Editor.js
+    // doesn't insert a second image block next to this empty one.
+    uploadContainer.tabIndex = 0;
+    uploadContainer.setAttribute("data-image-dropzone", "true");
+    uploadContainer.addEventListener("dragover", (e: DragEvent) => {
+      if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes("Files")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      uploadContainer.classList.add("tp-image__drop--over");
+    });
+    uploadContainer.addEventListener("dragleave", () => {
+      uploadContainer.classList.remove("tp-image__drop--over");
+    });
+    uploadContainer.addEventListener("drop", (e: DragEvent) => {
+      uploadContainer.classList.remove("tp-image__drop--over");
+      const file = Array.from(e.dataTransfer?.files || []).find((f) =>
+        String(f.type).startsWith("image/"),
+      );
+      if (!file) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void this.runIngest(() => this.ingestFile(file));
+    });
 
     uploadContainer.appendChild(uploadIcon);
     uploadContainer.appendChild(title);
@@ -3310,17 +3556,27 @@ export default class ImageTool {
     this.wrapper.appendChild(uploadContainer);
   }
   save(): any {
+    // Sizes come from data (every resize path writes it). Reading
+    // offsetWidth here used to save "0px" for a not-yet-loaded or hidden
+    // image and lose the size; it's only a fallback for "auto" now.
     const image = this.imageContainer?.querySelector("img") as HTMLImageElement;
-    if (image) {
-      this.data.width = `${image.offsetWidth}px`;
-      this.data.height = `${image.offsetHeight}px`;
+    if (image && (!parsePx(this.data.width) || !parsePx(this.data.height))) {
+      if (image.offsetWidth > 0 && image.offsetHeight > 0) {
+        this.data.width = `${image.offsetWidth}px`;
+        this.data.height = `${image.offsetHeight}px`;
+      }
+    }
+    // A caption being typed inline (not yet blurred).
+    const liveCaption = this.wrapper?.querySelector("[data-image-caption]");
+    if (liveCaption && this.data.showCaption) {
+      this.data.caption = (liveCaption.textContent || "").trim();
     }
 
     return {
       file: { url: this.data.url },
       caption: this.data.caption,
       dimensions: { width: this.data.width, height: this.data.height },
-      rotation: this.data.rotation,
+      rotation: normalizeRotation(this.data.rotation),
       aspectRatio: this.data.aspectRatio || "free",
       flipX: this.data.flipX,
       flipY: this.data.flipY,
@@ -3338,20 +3594,54 @@ export default class ImageTool {
     };
   }
 
+  /** Editor.js: block removed from the page. */
+  removed(): void {
+    this.destroy();
+  }
+
+  /** Editor.js: editor / block destroyed. Removes everything this tool
+   *  put outside its own block (settings panel, document listeners). */
+  destroy(): void {
+    if (this.destroyed) return;
+    this._closeContextMenu();
+    this.stopDrag();
+    this.ingestSeq++; // ignore any upload still in flight
+    if (this.wrapper) {
+      this.wrapper.removeEventListener("paste", this.boundPaste);
+      this.wrapper.removeEventListener("contextmenu", this.boundContextMenu);
+      if (this.captionHoverShow) this.wrapper.removeEventListener("mouseenter", this.captionHoverShow);
+      if (this.captionHoverHide) this.wrapper.removeEventListener("mouseleave", this.captionHoverHide);
+    }
+    this.captionHoverShow = null;
+    this.captionHoverHide = null;
+    this.destroyed = true;
+  }
+
   // Context Menu Methods
   private _showContextMenu(targetElement: HTMLElement): void {
     if (this.isContextMenuOpen) {
       this._closeContextMenu();
       return;
     }
+    // One panel at a time across every image block.
+    if (openPanelOwner && openPanelOwner !== this) openPanelOwner._closeContextMenu();
+    // Belt and braces: drop any orphaned panel left in <body>.
+    document
+      .querySelectorAll("[data-image-settings-panel]")
+      .forEach((el) => el.remove());
 
     this.contextMenu = this._createContextMenu();
     document.body.appendChild(this.contextMenu);
     this.isContextMenuOpen = true;
+    openPanelOwner = this;
 
     this._positionContextMenu(targetElement);
 
+    // Deferred so the opening click doesn't close it; skipped if the panel
+    // was closed again before the timer fired.
+    const menu = this.contextMenu;
     setTimeout(() => {
+      if (this.contextMenu !== menu || !this.isContextMenuOpen) return;
       document.addEventListener("click", this._handleOutsideClick);
       document.addEventListener("keydown", this._handleEscKey);
     }, 0);
@@ -3374,6 +3664,7 @@ export default class ImageTool {
       this.contextMenu.remove();
       this.contextMenu = null;
     }
+    if (openPanelOwner === this) openPanelOwner = null;
     this.isContextMenuOpen = false;
     document.removeEventListener("click", this._handleOutsideClick);
     document.removeEventListener("keydown", this._handleEscKey);
@@ -3410,9 +3701,17 @@ export default class ImageTool {
     // other right-side docked panels rather than a popup.
     menu.style.transform = "translateX(100%)";
     menu.style.transition = "transform 0.18s ease-out";
-    requestAnimationFrame(() => {
+    const slideIn = () => {
       menu.style.transform = "translateX(0)";
-    });
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(slideIn);
+    else slideIn();
+    // Every control in the panel edits this.data; tell Editor.js once per
+    // interaction instead of from each handler.
+    const changed = () => setTimeout(() => this.notifyChange(), 0);
+    menu.addEventListener("change", changed);
+    menu.addEventListener("input", changed);
+    menu.addEventListener("click", changed);
 
     const header = document.createElement("div");
     header.style.cssText = `
@@ -3586,7 +3885,7 @@ export default class ImageTool {
       const input = document.createElement("input");
       input.type = "number";
       input.value = String(
-        parseInt(this.data.tunes?.imageTune?.[margin] || "0"),
+        parseInt(this.data.tunes?.imageTune?.[margin] || "0", 10) || 0,
       );
       input.style.width = "100%";
       input.style.padding = "8px 12px";
@@ -3596,7 +3895,8 @@ export default class ImageTool {
 
       input.addEventListener("change", (e) => {
         const value = (e.target as HTMLInputElement).value;
-        this.setMargin(margin, `${value}px`);
+        this.setMargin(margin, value);
+        input.value = String(parsePx(this.data.tunes.imageTune[margin]) || 0);
       });
 
       container.appendChild(label);
@@ -3668,20 +3968,17 @@ export default class ImageTool {
 
     const alignment = this.data.tunes?.alignment?.alignment || "left";
 
-    if (
-      wrapValue === "inline" ||
-      wrapValue === "top-bottom" ||
-      wrapValue === "none"
-    ) {
+    if (!FLOAT_WRAPS.has(wrapValue)) {
       this.data.tunes.imageTune.float = "inline";
+    } else if (alignment === "right") {
+      this.data.tunes.imageTune.float = "right";
     } else {
-      if (alignment === "right") {
-        this.data.tunes.imageTune.float = "right";
-      } else {
-        this.data.tunes.imageTune.float = "left";
-      }
+      // Floats sit left or right; a centred image floats left.
+      this.data.tunes.imageTune.float = "left";
+      if (alignment === "center") this.data.tunes.alignment.alignment = "left";
     }
 
     this.applyTunesStyles();
+    this.notifyChange();
   }
 }

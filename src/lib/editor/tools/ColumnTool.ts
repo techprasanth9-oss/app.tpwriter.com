@@ -60,6 +60,8 @@ class ColumnTool {
   private isResizing: boolean = false;
   private currentResizeIndex: number = -1;
   private observer: MutationObserver | null = null;
+  /** Teardown for every observer / document listener this block adds. */
+  private cleanups: Array<() => void> = [];
 
   static get toolbox() {
     return {
@@ -260,7 +262,7 @@ class ColumnTool {
     `;
 
     const editorHolder = document.createElement("div");
-    editorHolder.id = `column-editor-${Date.now()}-${index}`;
+    editorHolder.id = nextHolderId();
     editorHolder.classList.add("column-editor-holder");
 
     editorHolder.style.cssText = `
@@ -423,8 +425,10 @@ class ColumnTool {
       ) as HTMLElement | null;
       if (!editorHolder) return;
 
-      const editorId = `column-editor-${Date.now()}-${columnIndex}`;
-      editorHolder.id = editorId;
+      // Pass the element itself: ids built from Date.now() collided when
+      // two column blocks initialised in the same millisecond, mounting
+      // one block's column inside the other.
+      editorHolder.id = nextHolderId();
 
       if (!this.config.EditorJS) {
         console.error("EditorJS constructor not available");
@@ -433,7 +437,7 @@ class ColumnTool {
 
       // TODO: tighten once we have a typed EditorJS config.
       const editorConfig: Record<string, unknown> = {
-        holder: editorId,
+        holder: editorHolder,
         tools: this.config.tools,
         data: {
           blocks: this.data.cols[columnIndex]?.blocks || [],
@@ -619,6 +623,7 @@ class ColumnTool {
     if (!this.observer) {
       this.observer = observer;
     }
+    this.cleanups.push(() => observer.disconnect());
 
     const handleSelectionChange = () => {
       const selection = window.getSelection();
@@ -640,6 +645,7 @@ class ColumnTool {
     };
 
     document.addEventListener("selectionchange", handleSelectionChange);
+    this.cleanups.push(() => document.removeEventListener("selectionchange", handleSelectionChange));
 
     editorElement.addEventListener("mouseup", () => {
       setTimeout(() => {
@@ -1352,6 +1358,8 @@ class ColumnTool {
   }
 
   destroy(): void {
+    this.cleanups.forEach((fn) => fn());
+    this.cleanups = [];
     this._destroyEditors();
     this.columnWrappers = [];
     this.resizeHandles = [];
@@ -1366,6 +1374,12 @@ class ColumnTool {
       this.observer = null;
     }
   }
+}
+
+let holderSeq = 0;
+function nextHolderId(): string {
+  holderSeq += 1;
+  return `column-editor-${holderSeq}`;
 }
 
 export default ColumnTool;

@@ -1996,3 +1996,17 @@ body {
 .rb-check { margin: 2px 8px 2px 0; font-size: 12.5px; }
 /* Field shading is an editing aid only (as in Word). */
 .tp-hf-static .tp-field { background: none; padding: 0; }
+
+/* ──────────────────────────────────────────────────────────────────
+   Phase 4: objects in the paginated flow
+   ────────────────────────────────────────────────────────────────── */
+
+/* Ghost header rows are absolutely positioned within their block. */
+.tp-flow .ce-block { position: relative; }
+.tp-table-ghost { pointer-events: none; z-index: 1; }
+.tp-measuring .tp-table-ghost { display: none !important; }
+
+/* Text-wrapped images float the whole block; the following blocks sit
+   beside it (each as its own flow-root box). */
+.tp-flow .ce-block:has(.tp-image--float-left) { float: left; clear: both; margin: 4px 20px 8px 0; max-width: 60%; }
+.tp-flow .ce-block:has(.tp-image--float-right) { float: right; clear: both; margin: 4px 0 8px 20px; max-width: 60%; }

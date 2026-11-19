@@ -22,6 +22,9 @@ import TableTool from "./tools/TableTool";
 import ColumnTool from "./tools/ColumnTool";
 import { ParagraphTool } from "./tools/ParagraphTool";
 import { ListTool } from "./tools/ListTool";
+import { EquationTool } from "./tools/EquationTool";
+import { TextBoxTool } from "./tools/TextBoxTool";
+import { ChartTool } from "./tools/ChartTool";
 
 export interface BaseToolsOptions {
   imageUploader?: ImageToolConfig["uploader"];
@@ -47,7 +50,7 @@ export function configureBaseTools(
   const textTunes = [FORMAT_TUNE];
   const objectTunes = ["alignment"];
 
-  return {
+  const tools: EditorToolConfig = {
     header: {
       class: HeaderTool as unknown as object,
       inlineToolbar,
@@ -87,6 +90,12 @@ export function configureBaseTools(
     pageBreak: { class: PageBreakTool as unknown as object },
     sectionBreak: { class: SectionBreakTool as unknown as object },
     toc: { class: TocTool as unknown as object },
+    equation: { class: EquationTool as unknown as object },
+    textBox: {
+      class: TextBoxTool as unknown as object,
+      inlineToolbar: true,
+    },
+    chart: { class: ChartTool as unknown as object },
     inlineCode: { class: InlineCode as unknown as object },
     bold: { class: BoldTool as unknown as object },
     italic: { class: ItalicTool as unknown as object },
@@ -101,4 +110,18 @@ export function configureBaseTools(
     alignment: { class: AlignmentTune as unknown as object },
     [FORMAT_TUNE]: { class: ParagraphFormatTune as unknown as object },
   };
+
+  // Columns' nested editors get the same tools, minus the ones that only
+  // make sense at document level (without this they only had a bare
+  // paragraph, and stored headers / lists / tables showed as stubs).
+  const nested: EditorToolConfig = { ...tools };
+  for (const name of COLUMN_EXCLUDED_TOOLS) delete nested[name];
+  tools.column = {
+    class: ColumnTool as unknown as object,
+    inlineToolbar: true,
+    config: { tools: nested },
+  };
+  return tools;
 }
+
+const COLUMN_EXCLUDED_TOOLS = ["column", "pageBreak", "sectionBreak", "toc"];
