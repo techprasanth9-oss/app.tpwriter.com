@@ -18,7 +18,6 @@
   "dependencies": {
     "@editorjs/editorjs": "^2.30.7",
     "@editorjs/inline-code": "^1.5.1",
-    "@editorjs/marker": "^1.4.0",
     "@tanstack/react-query": "^5.62.7",
     "@tanstack/react-router": "^1.87.3",
     "docx": "^9.12.0",

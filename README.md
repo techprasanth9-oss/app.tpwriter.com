@@ -33,5 +33,7 @@ pnpm dev
   TP_API_DIR=../../Backend/tp-writer-api pnpm test:e2e
   ```
 
-  Locally it uses your installed Chrome. In CI the E2E workflow needs an
+  It runs its own servers on ports 3100 (app) and 3101 (API) so it doesn't
+  clash with dev servers on 3000/3001 (override with `E2E_APP_PORT` /
+  `E2E_API_PORT`). Locally it uses your installed Chrome. In CI the E2E workflow needs an
   `API_REPO_TOKEN` secret with read access to the API repo.

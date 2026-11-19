@@ -13,7 +13,8 @@ export default defineConfig({
     port: 3000,
     proxy: {
       "/api": {
-        target: "http://localhost:3001",
+        // Override to run alongside another app on :3001 (the e2e suite does).
+        target: process.env.VITE_API_PROXY_TARGET ?? "http://localhost:3001",
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/api/, ""),
       },

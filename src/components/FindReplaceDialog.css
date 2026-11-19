@@ -1,0 +1,245 @@
+/* Find & Replace floating panel — sits top-right of its positioned parent. */
+
+.tp-find {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  z-index: 60;
+  box-sizing: border-box;
+  width: 400px;
+  max-width: calc(100vw - 32px);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--tp-paper);
+  color: var(--tp-ink);
+  border: 1px solid var(--tp-rule);
+  border-radius: 10px;
+  box-shadow: var(--tp-shadow-md);
+  font-family: var(--tp-font-sans);
+  font-size: 13px;
+}
+
+.tp-find *,
+.tp-find *::before,
+.tp-find *::after {
+  box-sizing: border-box;
+}
+
+.tp-find-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tp-find-spacer {
+  flex: 0 0 28px;
+}
+
+.tp-find-field {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.tp-find-input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 72px 0 8px;
+  border: 1px solid var(--tp-rule);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--tp-ink);
+  font: inherit;
+  outline: none;
+}
+
+.tp-find-replace-row .tp-find-input {
+  padding-right: 8px;
+}
+
+.tp-find-input::placeholder {
+  color: var(--tp-mute);
+}
+
+.tp-find-input:hover {
+  border-color: var(--tp-rule-strong);
+}
+
+.tp-find-input:focus {
+  border-color: var(--tp-accent);
+  box-shadow: 0 0 0 2px var(--tp-accent-faint);
+}
+
+.tp-find-count {
+  position: absolute;
+  right: 8px;
+  max-width: 64px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--tp-slate);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.tp-find-icon {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--tp-slate);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tp-find-icon:hover:not(:disabled) {
+  background: var(--tp-paper-strong);
+  color: var(--tp-ink);
+}
+
+.tp-find-icon:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.tp-find-chevron {
+  display: inline-block;
+  font-size: 18px;
+  transition: transform 120ms ease;
+}
+
+.tp-find-chevron.open {
+  transform: rotate(90deg);
+}
+
+.tp-find-options {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.tp-find-chip {
+  height: 26px;
+  min-width: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--tp-rule);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--tp-slate);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tp-find-chip:hover {
+  border-color: var(--tp-rule-strong);
+  color: var(--tp-ink);
+}
+
+.tp-find-chip[aria-pressed="true"] {
+  background: var(--tp-accent-soft);
+  border-color: var(--tp-accent);
+  color: var(--tp-accent-hover);
+}
+
+.tp-find-ww {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.tp-find-status {
+  color: var(--tp-slate);
+  font-size: 12px;
+  padding: 0 4px;
+}
+
+.tp-find-actions {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.tp-find-btn {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--tp-rule-strong);
+  border-radius: 6px;
+  background: var(--tp-paper);
+  color: var(--tp-ink);
+  font: inherit;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tp-find-btn:hover:not(:disabled) {
+  background: var(--tp-paper-strong);
+}
+
+.tp-find-btn-primary {
+  background: var(--tp-accent);
+  border-color: var(--tp-accent);
+  color: #fff;
+}
+
+.tp-find-btn-primary:hover:not(:disabled) {
+  background: var(--tp-accent-hover);
+  border-color: var(--tp-accent-hover);
+}
+
+.tp-find-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.tp-find button:focus-visible {
+  outline: 2px solid var(--tp-accent);
+  outline-offset: 1px;
+}
+
+.tp-find-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 480px) {
+  .tp-find {
+    right: 16px;
+    left: auto;
+    width: calc(100vw - 32px);
+  }
+  .tp-find-spacer {
+    display: none;
+  }
+}
+
+/* CSS Custom Highlight API — match highlighting (no-op where unsupported). */
+::highlight(tp-find) {
+  background-color: var(--tp-marker);
+  color: inherit;
+}
+
+::highlight(tp-find-current) {
+  background-color: var(--tp-accent);
+  color: #fff;
+}

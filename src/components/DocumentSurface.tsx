@@ -5,7 +5,6 @@ import {
   useImperativeHandle,
   useMemo,
   useRef,
-  type KeyboardEvent,
   type MouseEvent,
 } from "react";
 import type { EditorBlock, PageLayout } from "~/lib/api/documents";
@@ -15,7 +14,6 @@ import { PAGE_GAP, pageSize } from "~/lib/editor/pagination/paper";
 import { usePagination, type PageSummary } from "~/lib/editor/pagination/usePagination";
 import { sanitizeEditorData } from "~/lib/editor/sanitizeData";
 
-export type SurfaceKeyCommand = "undo" | "redo" | "pageBreak";
 
 interface Props {
   /** Content to load. Read once on mount — remount (change `key`) to load
@@ -30,7 +28,6 @@ interface Props {
   onChange: () => void;
   onImageUpload: (file: File) => Promise<{ url: string }>;
   onPagesChange: (pages: PageSummary[]) => void;
-  onKeyCommand: (command: SurfaceKeyCommand) => void;
 }
 
 export interface DocumentSurfaceHandle {
@@ -55,7 +52,6 @@ export const DocumentSurface = forwardRef<DocumentSurfaceHandle, Props>(
       onChange,
       onImageUpload,
       onPagesChange,
-      onKeyCommand,
     },
     ref,
   ) {
@@ -66,8 +62,8 @@ export const DocumentSurface = forwardRef<DocumentSurfaceHandle, Props>(
 
     // EditorJS lives for the component's lifetime; its callbacks read the
     // latest props through this ref instead of closing over the first ones.
-    const propsRef = useRef({ onReady, onChange, onImageUpload, onPagesChange, onKeyCommand });
-    propsRef.current = { onReady, onChange, onImageUpload, onPagesChange, onKeyCommand };
+    const propsRef = useRef({ onReady, onChange, onImageUpload, onPagesChange });
+    propsRef.current = { onReady, onChange, onImageUpload, onPagesChange };
     const initialBlocksRef = useRef(initialBlocks);
 
     const { width, height } = pageSize(layout);
@@ -146,22 +142,6 @@ export const DocumentSurface = forwardRef<DocumentSurfaceHandle, Props>(
       [],
     );
 
-    const onKeyDownCapture = (e: KeyboardEvent<HTMLDivElement>) => {
-      const mod = e.metaKey || e.ctrlKey;
-      if (!mod) return;
-      const key = e.key.toLowerCase();
-      let command: SurfaceKeyCommand | null = null;
-      if (key === "z") command = e.shiftKey ? "redo" : "undo";
-      else if (key === "y" && e.ctrlKey) command = "redo";
-      else if (e.key === "Enter") command = "pageBreak";
-      if (!command) return;
-      // Native contenteditable undo only knows one block and would fight
-      // our document-level history.
-      e.preventDefault();
-      e.stopPropagation();
-      propsRef.current.onKeyCommand(command);
-    };
-
     // Clicks in the empty area below the last block focus the end of the
     // document, like clicking below the text in a word processor.
     const onFlowMouseDown = (e: MouseEvent<HTMLDivElement>) => {
@@ -181,7 +161,6 @@ export const DocumentSurface = forwardRef<DocumentSurfaceHandle, Props>(
             height: totalHeight,
             transform: zoom !== 1 ? `scale(${zoom})` : undefined,
           }}
-          onKeyDownCapture={onKeyDownCapture}
         >
           <style>{stylesCss}</style>
           {Array.from({ length: pageCount }, (_, i) => (

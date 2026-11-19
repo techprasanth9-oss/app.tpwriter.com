@@ -1,7 +1,5 @@
 // @ts-ignore no type declarations shipped
 import InlineCode from "@editorjs/inline-code";
-// @ts-ignore
-import Marker from "@editorjs/marker";
 import { HeaderTool } from "./tools/HeaderTool";
 import { AlignmentTune } from "./tools/AlignmentTune";
 import { ParagraphFormatTune } from "./tools/ParagraphFormatTune";
@@ -16,7 +14,6 @@ import {
   SuperscriptTool,
   SubscriptTool,
 } from "./tools/FormatTools";
-import { TextColorTool } from "./tools/TextStyleTools";
 import { VariableTool } from "./tools/VariableTool";
 import ImageTool, { type ImageToolConfig } from "./tools/ImageTool";
 import TableTool from "./tools/TableTool";
@@ -39,8 +36,6 @@ export function configureBaseTools(
     "italic",
     "underline",
     "strike",
-    "textColor",
-    "marker",
     "inlineCode",
     "variable",
   ];
@@ -89,14 +84,12 @@ export function configureBaseTools(
     },
     pageBreak: { class: PageBreakTool as unknown as object },
     inlineCode: { class: InlineCode as unknown as object },
-    marker: { class: Marker as unknown as object },
     bold: { class: BoldTool as unknown as object },
     italic: { class: ItalicTool as unknown as object },
     underline: { class: UnderlineTool as unknown as object },
     strike: { class: StrikeTool as unknown as object },
     superscript: { class: SuperscriptTool as unknown as object },
     subscript: { class: SubscriptTool as unknown as object },
-    textColor: { class: TextColorTool as unknown as object },
     variable: {
       class: VariableTool as unknown as object,
       config: { availableVariables: opts.variables ?? [] },

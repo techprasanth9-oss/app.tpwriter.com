@@ -11,6 +11,9 @@ import path from "node:path";
  *   TP_API_DIR=../../Backend/tp-writer-api pnpm test:e2e
  */
 const apiDir = process.env.TP_API_DIR;
+// Dedicated ports so the suite doesn't collide with dev servers on 3000/3001.
+const APP_PORT = Number(process.env.E2E_APP_PORT ?? 3100);
+const API_PORT = Number(process.env.E2E_API_PORT ?? 3101);
 if (!apiDir) {
   throw new Error("Set TP_API_DIR to the tp-writer-api checkout to run e2e tests.");
 }
@@ -26,7 +29,7 @@ export default defineConfig({
   reporter: process.env.CI ? [["github"], ["list"]] : "list",
   globalSetup: "./e2e/global-setup.ts",
   use: {
-    baseURL: "http://localhost:3000",
+    baseURL: `http://localhost:${APP_PORT}`,
     storageState: "e2e/.auth/user.json",
     viewport: { width: 1400, height: 1000 },
     trace: "retain-on-failure",
@@ -46,15 +49,16 @@ export default defineConfig({
     {
       command: "pnpm dev:memory",
       cwd: path.resolve(apiDir),
-      url: "http://localhost:3001/health",
+      env: { PORT: String(API_PORT), CORS_ORIGINS: `http://localhost:${APP_PORT}` },
+      url: `http://localhost:${API_PORT}/health`,
       reuseExistingServer: false,
       timeout: 120_000,
     },
     {
       // Empty VITE_API_URL → the app uses the /api dev proxy.
-      command: "pnpm exec vite --port 3000 --strictPort",
-      env: { VITE_API_URL: "" },
-      url: "http://localhost:3000",
+      command: `pnpm exec vite --port ${APP_PORT} --strictPort`,
+      env: { VITE_API_URL: "", VITE_API_PROXY_TARGET: `http://localhost:${API_PORT}` },
+      url: `http://localhost:${APP_PORT}`,
       reuseExistingServer: false,
       timeout: 120_000,
     },

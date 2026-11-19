@@ -90,4 +90,59 @@ describe("exportDocx", () => {
     expect(doc).not.toContain("{zw-ordered");
     expect(doc).toContain("one");
   });
+
+  it("exports inline fonts, sizes, colours, highlights and links", async () => {
+    const blob = await exportDocx({
+      time: 1,
+      version: "2.30.7",
+      blocks: [
+        {
+          type: "paragraph",
+          data: {
+            text:
+              '<span style="font-family: Georgia, serif; font-size: 18pt; color: rgb(255, 0, 0);">styled</span> ' +
+              '<span style="background-color: #fef08a">marked</span> ' +
+              '<a href="https://example.com/x">site</a> <a href="javascript:alert(1)">bad</a>',
+          },
+        },
+      ],
+    });
+    const zip = await JSZip.loadAsync(blob);
+    const doc = await zip.file("word/document.xml")!.async("string");
+    const rels = await zip.file("word/_rels/document.xml.rels")!.async("string");
+    expect(doc).toContain('w:ascii="Georgia"');
+    expect(doc).toContain('<w:sz w:val="36"/>');
+    expect(doc).toContain('<w:color w:val="FF0000"/>');
+    expect(doc).toContain('w:fill="FEF08A"');
+    expect(doc).toContain("<w:hyperlink");
+    expect(rels).toContain('Target="https://example.com/x"');
+    expect(rels).not.toContain("javascript");
+    expect(doc).toContain(">bad<");
+  });
+
+  it("exports list number formats, start values, restarts and checklists", async () => {
+    const item = (content: string, extra: object = {}) => ({ content, meta: {}, items: [], ...extra });
+    const blob = await exportDocx({
+      time: 1,
+      version: "2.30.7",
+      blocks: [
+        { type: "list", data: { style: "ordered", meta: { counterType: "upper-roman", start: 3 }, items: [item("roman three")] } },
+        { type: "list", data: { style: "ordered", meta: { counterType: "numeric" }, items: [item("one")] } },
+        { type: "list", data: { style: "ordered", meta: { counterType: "numeric" }, items: [item("one again")] } },
+        { type: "list", data: { style: "checklist", meta: {}, items: [item("done", { meta: { checked: true } }), item("todo", { meta: { checked: false } })] } },
+      ],
+    });
+    const zip = await JSZip.loadAsync(blob);
+    const numbering = await zip.file("word/numbering.xml")!.async("string");
+    const doc = await zip.file("word/document.xml")!.async("string");
+    expect(numbering).toContain('w:val="upperRoman"');
+    expect(numbering).toContain('<w:start w:val="3"/>');
+    // Two separate numeric lists → two num instances (each restarts at 1).
+    const numIds = new Set([...doc.matchAll(/<w:numId w:val="(\d+)"\/>/g)].map((m) => m[1]));
+    expect(numIds.size).toBe(3);
+    expect(doc).not.toContain("{tp-ol");
+    expect(doc).toContain("☒ ");
+    expect(doc).toContain("☐ ");
+  });
 });
+

@@ -31,8 +31,8 @@ test("ribbon formatting persists and the ribbon reflects it", async ({ page, req
   await openDocument(page, id);
 
   await page.locator(".ce-paragraph").nth(1).click();
-  await page.getByRole("button", { name: "Align center" }).click();
-  await expect(page.getByRole("button", { name: "Align center" })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: /^Center/ }).click();
+  await expect(page.getByRole("button", { name: /^Center/ })).toHaveAttribute("aria-pressed", "true");
   await page.locator(".ce-paragraph").first().click();
   await page.getByLabel("Paragraph style").selectOption("heading1");
   await expect(page.locator('.ce-header[data-level="1"]')).toHaveText("First");

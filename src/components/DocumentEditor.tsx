@@ -17,7 +17,14 @@ import type { PageSummary } from "~/lib/editor/pagination/usePagination";
 import { sanitizeEditorData } from "~/lib/editor/sanitizeData";
 import { resolveStyles, stylesToCss } from "~/lib/editor/styles/namedStyles";
 import { DocumentHeader } from "./DocumentHeader";
-import { DocumentSurface, type DocumentSurfaceHandle, type SurfaceKeyCommand } from "./DocumentSurface";
+import { DocumentSurface, type DocumentSurfaceHandle } from "./DocumentSurface";
+import { FindReplaceDialog } from "./FindReplaceDialog";
+import { LinkBubble, LinkDialog } from "./LinkDialog";
+import { StatusBar } from "./StatusBar";
+import { StylesDialog } from "./StylesDialog";
+import type { CopiedFormat } from "~/lib/editor/commands";
+import { matchShortcut } from "~/lib/editor/shortcuts";
+import type { StyleSheet } from "~/lib/editor/styles/namedStyles";
 import { EditorRibbon } from "./EditorRibbon";
 import { LayoutDialog } from "./LayoutDialog";
 import { ThumbnailsSidebar } from "./ThumbnailsSidebar";
@@ -102,6 +109,15 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
   const [activePage, setActivePage] = useState(0);
   const [commands, setCommands] = useState<EditorCommands | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [styleOverrides, setStyleOverrides] = useState<Record<string, unknown>>(doc.styles ?? {});
+  const [stylesOpen, setStylesOpen] = useState(false);
+  const [find, setFind] = useState<{ open: boolean; mode: "find" | "replace" }>({ open: false, mode: "find" });
+  const [linkDialog, setLinkDialog] = useState<{ url: string; text: string } | null>(null);
+  const [bubbleLink, setBubbleLink] = useState<HTMLAnchorElement | null>(null);
+  const [painterArmed, setPainterArmed] = useState(false);
+  const [showStatusBar, setShowStatusBar] = useState(() => readPref("tp.statusBar", true));
+  /** Bumps on every content change (find re-search, word count). */
+  const [version, setVersion] = useState(0);
 
   const editorRef = useRef<EditorJS | null>(null);
   const historyRef = useRef<EditorHistory | null>(null);
@@ -109,8 +125,10 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
   const surfaceRef = useRef<DocumentSurfaceHandle>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const docRootRef = useRef<HTMLElement | null>(null);
+  const copiedFormatRef = useRef<CopiedFormat | null>(null);
 
-  const styles = useMemo(() => resolveStyles(doc.styles), [doc.styles]);
+  const styles = useMemo(() => resolveStyles(styleOverrides), [styleOverrides]);
   const stylesCss = useMemo(() => stylesToCss(styles, ".tp-document"), [styles]);
 
   const autosave = useAutosave({
@@ -131,13 +149,22 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
     historyRef.current = history;
     void history.record();
     const root = document.querySelector<HTMLElement>(".tp-document");
+    docRootRef.current = root;
     setCommands(new EditorCommands(editor, history, root ?? document.body));
   }, []);
 
   useEffect(() => () => commands?.dispose(), [commands]);
 
+  const versionTimerRef = useRef<number | null>(null);
   const handleChange = useCallback(() => {
     autosave.markDirty();
+    // Find and word count only need to catch up after a pause; bumping on
+    // every keystroke would re-render the whole workspace while typing.
+    if (versionTimerRef.current !== null) window.clearTimeout(versionTimerRef.current);
+    versionTimerRef.current = window.setTimeout(() => {
+      versionTimerRef.current = null;
+      setVersion((v) => v + 1);
+    }, 250);
     // Group a burst of typing into one undo step.
     if (historyTimerRef.current !== null) window.clearTimeout(historyTimerRef.current);
     historyTimerRef.current = window.setTimeout(() => {
@@ -146,15 +173,114 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
     }, 500);
   }, [autosave]);
 
-  const handleKeyCommand = useCallback(
-    (command: SurfaceKeyCommand) => {
-      if (!commands) return;
-      if (command === "undo") void commands.undo();
-      else if (command === "redo") void commands.redo();
-      else void commands.insertPageBreak();
+  // ── Links ────────────────────────────────────────────────────────────
+
+  const openLinkDialog = useCallback(() => {
+    if (!commands) return;
+    setLinkDialog({ url: commands.inlineState().link ?? "", text: commands.selectedText() });
+  }, [commands]);
+
+  // Show the link bubble while the caret is inside a link.
+  useEffect(() => {
+    const onSelection = () => {
+      const sel = document.getSelection();
+      const node = sel?.anchorNode;
+      const el = node instanceof Element ? node : node?.parentElement;
+      const link = el?.closest("a");
+      setBubbleLink(link && docRootRef.current?.contains(link) && sel?.isCollapsed ? link : null);
+    };
+    document.addEventListener("selectionchange", onSelection);
+    return () => document.removeEventListener("selectionchange", onSelection);
+  }, []);
+
+  // ── Format painter ───────────────────────────────────────────────────
+
+  const togglePainter = useCallback(() => {
+    if (painterArmed) {
+      setPainterArmed(false);
+      return;
+    }
+    const copied = commands?.copyFormat();
+    if (!copied) return;
+    copiedFormatRef.current = copied;
+    setPainterArmed(true);
+  }, [commands, painterArmed]);
+
+  // Armed painter: the next selection made in the document gets the format.
+  useEffect(() => {
+    if (!painterArmed || !commands) return;
+    const onUp = (e: MouseEvent) => {
+      if (!docRootRef.current?.contains(e.target as Node)) return;
+      const sel = document.getSelection();
+      if (!sel || sel.isCollapsed || !copiedFormatRef.current) return;
+      void commands.pasteFormat(copiedFormatRef.current);
+      setPainterArmed(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPainterArmed(false);
+    };
+    document.addEventListener("mouseup", onUp);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mouseup", onUp);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [commands, painterArmed]);
+
+  // ── Keyboard shortcuts ───────────────────────────────────────────────
+
+  const handleKeyDownCapture = useCallback(
+    (e: React.KeyboardEvent) => {
+      const action = matchShortcut(e.nativeEvent);
+      if (!action || !commands) return;
+      const inDocument = docRootRef.current?.contains(e.target as Node) ?? false;
+      // Outside the document (ribbon inputs, dialogs) only the global
+      // shortcuts apply; Ctrl+Z there should undo the input, not the doc.
+      if (!inDocument && action.type !== "find" && action.type !== "replace") return;
+      // Native contenteditable undo only knows one block and would fight
+      // the document-level history.
+      e.preventDefault();
+      e.stopPropagation();
+      switch (action.type) {
+        case "undo": void commands.undo(); break;
+        case "redo": void commands.redo(); break;
+        case "pageBreak": void commands.insertPageBreak(); break;
+        case "link": openLinkDialog(); break;
+        case "find": setFind({ open: true, mode: "find" }); break;
+        case "replace": setFind({ open: true, mode: "replace" }); break;
+        case "align": void commands.setAlignment(action.alignment); break;
+        case "style": void commands.applyStyle(action.styleId); break;
+        case "fontSize": void commands.stepFontSize(action.direction); break;
+        case "clearFormatting": void commands.clearFormatting(); break;
+        case "superscript": commands.inline("superscript"); break;
+        case "subscript": commands.inline("subscript"); break;
+        case "strike": commands.inline("strikeThrough"); break;
+        case "list": void commands.toggleList(action.style); break;
+        case "copyFormat": copiedFormatRef.current = commands.copyFormat(); break;
+        case "pasteFormat":
+          if (copiedFormatRef.current) void commands.pasteFormat(copiedFormatRef.current);
+          break;
+      }
     },
-    [commands],
+    [commands, openLinkDialog],
   );
+
+  // ── Styles ───────────────────────────────────────────────────────────
+
+  const saveStyles = useCallback(
+    async (next: StyleSheet) => {
+      const meta = await updateDocument(documentId, { styles: next as unknown as Record<string, unknown> });
+      setStyleOverrides(meta.styles);
+    },
+    [documentId],
+  );
+
+  const toggleStatusBar = useCallback(() => {
+    setShowStatusBar((v) => {
+      writePref("tp.statusBar", !v);
+      return !v;
+    });
+  }, []);
 
   // ── Unsaved local draft (crash / closed tab while offline) ───────────
 
@@ -319,6 +445,18 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
     [documentId],
   );
 
+  const handleLayoutPatch = useCallback(
+    (patch: Partial<PageLayout>) => {
+      const next = { ...layout, ...patch };
+      setLayout(next); // optimistic; the server echoes the merged layout
+      void handleLayoutApply(next).catch((err) => {
+        console.error("[layout] failed:", err);
+        setLayout(layout);
+      });
+    },
+    [handleLayoutApply, layout],
+  );
+
   const handleBack = useCallback(async () => {
     await autosave.saveNow().catch(() => undefined);
     navigate({ to: "/" });
@@ -336,7 +474,7 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
   }, [autosave]);
 
   return (
-    <div className="doc-root">
+    <div className={`doc-root${painterArmed ? " tp-painter-armed" : ""}`} onKeyDownCapture={handleKeyDownCapture}>
       <DocumentHeader
         title={title}
         onTitleChange={setTitle}
@@ -393,7 +531,21 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
         onChange={handleFileSelected}
       />
 
-      <EditorRibbon commands={commands} />
+      <EditorRibbon
+        commands={commands}
+        layout={layout}
+        onLayoutChange={handleLayoutPatch}
+        onOpenPageSetup={() => setLayoutDialogOpen(true)}
+        zoom={zoom}
+        onZoomChange={setZoom}
+        onOpenFind={(mode) => setFind({ open: true, mode })}
+        onOpenLink={openLinkDialog}
+        onOpenStyles={() => setStylesOpen(true)}
+        painterArmed={painterArmed}
+        onTogglePainter={togglePainter}
+        showStatusBar={showStatusBar}
+        onToggleStatusBar={toggleStatusBar}
+      />
 
       <div className="doc-body">
         <ThumbnailsSidebar
@@ -415,11 +567,40 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
               onChange={handleChange}
               onImageUpload={uploadImage}
               onPagesChange={setPages}
-              onKeyCommand={handleKeyCommand}
             />
           </div>
+          <LinkBubble
+            link={bubbleLink}
+            container={scrollRef.current}
+            onEdit={openLinkDialog}
+            onRemove={() => void commands?.removeLink()}
+          />
         </main>
+
+        <FindReplaceDialog
+          open={find.open}
+          mode={find.mode}
+          root={docRootRef.current}
+          version={version}
+          onClose={() => setFind((f) => ({ ...f, open: false }))}
+          onBeforeReplace={() => historyRef.current?.record()}
+        />
       </div>
+
+      {showStatusBar && (
+        <StatusBar root={docRootRef.current} version={version} page={activePage} pageCount={pages.length || 1} />
+      )}
+
+      <LinkDialog
+        open={linkDialog !== null}
+        initialUrl={linkDialog?.url ?? ""}
+        selectedText={linkDialog?.text ?? ""}
+        onApply={(url, text) => commands?.setLink(url, text) ?? false}
+        onRemove={() => void commands?.removeLink()}
+        onClose={() => setLinkDialog(null)}
+      />
+
+      <StylesDialog open={stylesOpen} styles={styles} onSave={saveStyles} onClose={() => setStylesOpen(false)} />
 
       <LayoutDialog
         open={layoutDialogOpen}
@@ -429,4 +610,22 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
       />
     </div>
   );
+}
+
+/** Per-browser UI preference (not document data). */
+function readPref(key: string, fallback: boolean): boolean {
+  try {
+    const v = localStorage.getItem(key);
+    return v === null ? fallback : v === "1";
+  } catch {
+    return fallback;
+  }
+}
+
+function writePref(key: string, value: boolean): void {
+  try {
+    localStorage.setItem(key, value ? "1" : "0");
+  } catch {
+    /* storage unavailable — preference just won't persist */
+  }
 }

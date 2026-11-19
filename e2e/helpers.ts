@@ -51,14 +51,32 @@ export async function waitSaved(page: Page): Promise<void> {
   await expect(page.locator(".doc-save-status")).toHaveText(/Saved/, { timeout: 15_000 });
 }
 
-/** Type lines as separate paragraphs. EditorJS moves the caret to the new
- *  block asynchronously, so pause briefly after Enter like a person would. */
+/** Type lines as separate paragraphs. EditorJS creates the new block and
+ *  moves the caret asynchronously; wait for the block (and caret) before
+ *  typing on, as a person naturally would. */
 export async function typeLines(page: Page, lines: string[]): Promise<void> {
   for (let i = 0; i < lines.length; i++) {
     await page.keyboard.type(lines[i]!);
     if (i < lines.length - 1) {
+      // Playwright types with 0ms gaps; EditorJS can drop an Enter that
+      // lands in the same instant as the last keystroke. People don't type
+      // that fast, so leave a human-sized gap.
+      await page.waitForTimeout(30);
+      const before = await page.locator(".ce-block").count();
       await page.keyboard.press("Enter");
-      await page.waitForTimeout(40);
+      await page.waitForFunction(
+        (n) => {
+          if (document.querySelectorAll(".ce-block").length <= n) return false;
+          // Focus has moved into the new, empty paragraph.
+          const active = document.activeElement as HTMLElement | null;
+          return !!active?.isContentEditable && !active.textContent;
+        },
+        before,
+        { timeout: 5_000 },
+      );
+      // EditorJS finishes placing the caret just after focus moves; nobody
+      // starts the next line within a few ms of pressing Enter.
+      await page.waitForTimeout(60);
     }
   }
 }
@@ -113,4 +131,61 @@ export async function caretToEnd(page: Page, text: string): Promise<void> {
     sel.removeAllRanges();
     sel.addRange(range);
   });
+}
+
+/** Select the first occurrence of `text` in the document (like a drag).
+ *  The text may span formatting (`<b>bold</b> and`), not editables. */
+export async function selectText(page: Page, text: string): Promise<void> {
+  const ok = await page.evaluate((needle) => {
+    const editables = document.querySelectorAll<HTMLElement>('.codex-editor__redactor [contenteditable="true"]');
+    for (const editable of Array.from(editables)) {
+      const nodes: Text[] = [];
+      const walker = document.createTreeWalker(editable, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) nodes.push(n as Text);
+      const full = nodes.map((n) => n.data).join("");
+      const at = full.indexOf(needle);
+      if (at < 0) continue;
+      const locate = (pos: number, end: boolean): [Text, number] => {
+        let acc = 0;
+        for (const n of nodes) {
+          if (pos < acc + n.length || (end && pos === acc + n.length)) return [n, pos - acc];
+          acc += n.length;
+        }
+        const last = nodes[nodes.length - 1]!;
+        return [last, last.length];
+      };
+      editable.focus();
+      const r = document.createRange();
+      r.setStart(...locate(at, false));
+      r.setEnd(...locate(at + needle.length, true));
+      const sel = document.getSelection()!;
+      sel.removeAllRanges();
+      sel.addRange(r);
+      return true;
+    }
+    return false;
+  }, text);
+  if (!ok) throw new Error(`text not found: ${text}`);
+  await page.waitForTimeout(50); // let selectionchange listeners run
+}
+
+/** Inline style of the element wrapping `text` (nearest ancestor with one). */
+export async function styleOf(page: Page, text: string, prop: string): Promise<string> {
+  return page.evaluate(
+    ([needle, p]) => {
+      const root = document.querySelector(".codex-editor__redactor")!;
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        if (!n.textContent!.includes(needle)) continue;
+        for (let el = n.parentElement; el && !el.isContentEditable === false; el = el.parentElement) {
+          const v = el.style.getPropertyValue(p);
+          if (v) return v;
+          if (el.getAttribute("contenteditable") === "true") break;
+        }
+        return "";
+      }
+      return "missing";
+    },
+    [text, prop] as const,
+  );
 }

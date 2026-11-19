@@ -11,6 +11,7 @@
  * data link is lost. Keep this file as the single source of truth.
  */
 
+import { filterInlineStyle } from "./format/inlineStyle";
 import { isSafeImageUrl, isSafeLinkUrl } from "./safeUrl";
 
 /** `<a>` keeps its href only when the scheme is allow-listed — html-janitor
@@ -53,6 +54,20 @@ export const MARK_SANITIZER = {
   contenteditable: true,
 };
 
+/**
+ * `<span>`: chips (with a class) keep their attributes as-is; plain styling
+ * spans keep only typography styles — this is what strips Word's `mso-*`
+ * and positioning junk from pasted content.
+ */
+export function sanitizeSpan(el: Element) {
+  if (!el.hasAttribute("class")) {
+    const style = filterInlineStyle(el.getAttribute("style") ?? "");
+    if (style) el.setAttribute("style", style);
+    else el.removeAttribute("style");
+  }
+  return VARIABLE_SPAN_SANITIZER;
+}
+
 /** Allowed inline tag set for a block's saved text content. */
 export const BLOCK_INLINE_TAGS = {
   br: true,
@@ -67,7 +82,7 @@ export const BLOCK_INLINE_TAGS = {
   sub: true,
   code: true,
   mark: MARK_SANITIZER,
-  span: VARIABLE_SPAN_SANITIZER,
+  span: sanitizeSpan,
   ins: { class: true, "data-label": true, style: true },
   a: sanitizeAnchor,
 };

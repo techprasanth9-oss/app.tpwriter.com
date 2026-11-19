@@ -1,4 +1,5 @@
 import DOMPurify from "dompurify";
+import { filterInlineStyle } from "./format/inlineStyle";
 import { isSafeImageUrl, isSafeLinkUrl } from "./safeUrl";
 
 /**
@@ -46,6 +47,12 @@ function installHooks(): void {
     }
     if (data.attrName === "src" && !isSafeImageUrl(data.attrValue)) {
       data.keepAttr = false;
+    }
+    // Plain styling spans keep typography only (chips, with a class, and
+    // other elements — table cells, images — keep their own styles).
+    if (data.attrName === "style" && node.tagName === "SPAN" && !node.hasAttribute("class")) {
+      data.attrValue = filterInlineStyle(data.attrValue);
+      if (!data.attrValue) data.keepAttr = false;
     }
   });
   // Links opened in a new tab must not get a handle on this window.

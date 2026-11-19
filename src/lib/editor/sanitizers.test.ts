@@ -18,3 +18,22 @@ describe("EditorJS sanitize rules", () => {
     expect(sanitizeImage(el('<img src="javascript:alert(1)">'))).toBe(false);
   });
 });
+
+describe("span sanitizing", () => {
+  it("keeps typography and drops mso/positioning styles on plain spans", async () => {
+    const { sanitizeSpan } = await import("./sanitizers");
+    const span = el('<span style="mso-fareast-font-family:Calibri;font-size:14pt;position:fixed;color:#333">x</span>');
+    sanitizeSpan(span);
+    expect(span.getAttribute("style")).toBe("font-size: 14pt; color: #333");
+    const chip = el('<span class="variable-chip" style="display:inline-block">X</span>');
+    sanitizeSpan(chip);
+    expect(chip.getAttribute("style")).toBe("display:inline-block");
+  });
+
+  it("load-time sanitizer filters span styles too", async () => {
+    const { sanitizeHtml } = await import("./sanitizeData");
+    expect(sanitizeHtml('<span style="font-size:12pt;mso-ansi-language:EN-US;top:0">t</span>')).toBe(
+      '<span style="font-size: 12pt">t</span>',
+    );
+  });
+});

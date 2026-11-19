@@ -1,0 +1,46 @@
+/*
+ * List block. Markers come from `list-style-type`, set per level by
+ * ListTool from a whitelist. Nothing here may turn the list or its items
+ * into a new block formatting context (no overflow, flow-root, flex, grid):
+ * the pagination layer pushes lines across page edges with floats placed
+ * outside the tool, and that only works while the lines wrap around them.
+ */
+.cdx-list--nested {
+  margin: 0;
+  padding-left: 1.5em;
+}
+
+.cdx-list-item__content {
+  outline: none;
+  min-height: 1em;
+}
+
+/* Checklist: the box sits in the item's left padding, outside the text. */
+.cdx-list--checklist,
+.cdx-list--checklist .cdx-list--nested {
+  list-style-type: none;
+}
+
+.cdx-list--checklist .cdx-list-item {
+  position: relative;
+}
+
+.cdx-list-item__checkbox {
+  position: absolute;
+  left: -1.35em;
+  top: 0.35em;
+  width: 0.95em;
+  height: 0.95em;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--tp-ink, #1f2328);
+}
+
+.cdx-list-item__checkbox:disabled {
+  cursor: default;
+}
+
+.cdx-list-item--checked > .cdx-list-item__content {
+  text-decoration: line-through;
+  color: var(--tp-mute, #8a8f98);
+}
