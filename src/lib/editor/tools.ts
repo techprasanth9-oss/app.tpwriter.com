@@ -4,6 +4,8 @@ import { HeaderTool } from "./tools/HeaderTool";
 import { AlignmentTune } from "./tools/AlignmentTune";
 import { ParagraphFormatTune } from "./tools/ParagraphFormatTune";
 import { PageBreakTool } from "./tools/PageBreakTool";
+import { SectionBreakTool } from "./tools/SectionBreakTool";
+import { TocTool } from "./tools/TocTool";
 import { FORMAT_TUNE } from "./format/paragraphFormat";
 import { HorizontalLineTool } from "./tools/HorizontalLineTool";
 import {
@@ -83,6 +85,8 @@ export function configureBaseTools(
       tunes: objectTunes,
     },
     pageBreak: { class: PageBreakTool as unknown as object },
+    sectionBreak: { class: SectionBreakTool as unknown as object },
+    toc: { class: TocTool as unknown as object },
     inlineCode: { class: InlineCode as unknown as object },
     bold: { class: BoldTool as unknown as object },
     italic: { class: ItalicTool as unknown as object },

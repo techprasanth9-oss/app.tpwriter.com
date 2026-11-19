@@ -24,6 +24,9 @@ import { StatusBar } from "./StatusBar";
 import { StylesDialog } from "./StylesDialog";
 import type { CopiedFormat } from "~/lib/editor/commands";
 import { matchShortcut } from "~/lib/editor/shortcuts";
+import { cleanPageSetup, type FieldKind, type HeaderFooterKind, type PageSetup } from "~/lib/editor/pageSetup";
+import type { HeaderFooterEditorHandle } from "./HeaderFooterEditor";
+import type { HeaderFooterArea, HeaderFooterTarget } from "./PageChrome";
 import type { StyleSheet } from "~/lib/editor/styles/namedStyles";
 import { EditorRibbon } from "./EditorRibbon";
 import { LayoutDialog } from "./LayoutDialog";
@@ -110,6 +113,12 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
   const [commands, setCommands] = useState<EditorCommands | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [styleOverrides, setStyleOverrides] = useState<Record<string, unknown>>(doc.styles ?? {});
+  const [pageSetup, setPageSetup] = useState<PageSetup>(() =>
+    cleanPageSetup(doc.pageSetup, doc.headerBlocks, doc.footerBlocks),
+  );
+  const [editingHF, setEditingHF] = useState<HeaderFooterTarget | null>(null);
+  /** Layout of the caret's section (the document's, or a section break's). */
+  const [section, setSection] = useState<{ breakId: string; layout: PageLayout } | null>(null);
   const [stylesOpen, setStylesOpen] = useState(false);
   const [find, setFind] = useState<{ open: boolean; mode: "find" | "replace" }>({ open: false, mode: "find" });
   const [linkDialog, setLinkDialog] = useState<{ url: string; text: string } | null>(null);
@@ -123,6 +132,8 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
   const historyRef = useRef<EditorHistory | null>(null);
   const historyTimerRef = useRef<number | null>(null);
   const surfaceRef = useRef<DocumentSurfaceHandle>(null);
+  const hfEditorRef = useRef<HeaderFooterEditorHandle>(null);
+  const pageSetupTimerRef = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const docRootRef = useRef<HTMLElement | null>(null);
@@ -265,6 +276,98 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
     [commands, openLinkDialog],
   );
 
+  // ── Page setup: headers / footers, footnotes, decoration ────────────
+
+  /** Update page setup locally now and save it after a short pause. */
+  const updatePageSetup = useCallback(
+    (fn: (prev: PageSetup) => PageSetup) => {
+      setPageSetup((prev) => {
+        const next = fn(prev);
+        if (pageSetupTimerRef.current !== null) window.clearTimeout(pageSetupTimerRef.current);
+        pageSetupTimerRef.current = window.setTimeout(() => {
+          pageSetupTimerRef.current = null;
+          updateDocument(documentId, { pageSetup: next as unknown as Record<string, unknown> }).catch((err) =>
+            console.error("[pageSetup] save failed:", err),
+          );
+        }, 600);
+        return next;
+      });
+    },
+    [documentId],
+  );
+
+  const handleHeaderFooterChange = useCallback(
+    (area: HeaderFooterArea, kind: HeaderFooterKind, blocks: EditorBlock[]) => {
+      updatePageSetup((prev) => {
+        const key = area === "header" ? "headers" : "footers";
+        return { ...prev, [key]: { ...prev[key], [kind]: blocks } };
+      });
+    },
+    [updatePageSetup],
+  );
+
+  const handleFootnoteChange = useCallback(
+    (id: string, html: string) => {
+      updatePageSetup((prev) => ({ ...prev, footnotes: { ...prev.footnotes, [id]: html } }));
+    },
+    [updatePageSetup],
+  );
+
+  const insertFootnote = useCallback(async () => {
+    const id = await commands?.insertFootnote();
+    if (!id) return;
+    updatePageSetup((prev) => ({ ...prev, footnotes: { ...prev.footnotes, [id]: "" } }));
+    // Put the caret in the new note once the paginator has laid it out.
+    window.setTimeout(() => {
+      document.querySelector<HTMLElement>(`[data-fn-text="${CSS.escape(id)}"]`)?.focus();
+    }, 400);
+  }, [commands, updatePageSetup]);
+
+  /** Open the header / footer of the page in view — via the page's own
+   *  zone, which knows whether that page uses the first / even variant. */
+  const editHeaderFooter = useCallback(
+    (area: HeaderFooterArea) => {
+      const zone = document.querySelector<HTMLElement>(`[data-testid="${area}-${Math.max(0, activePage)}"]`);
+      zone?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      zone?.scrollIntoView({ block: "nearest" });
+    },
+    [activePage],
+  );
+
+  const insertField = useCallback((kind: FieldKind) => hfEditorRef.current?.insertField(kind), []);
+
+  // Esc leaves header / footer editing.
+  useEffect(() => {
+    if (!editingHF) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setEditingHF(null);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [editingHF]);
+
+  // Track which section the caret is in, so Layout changes go there.
+  useEffect(() => {
+    if (!commands) return;
+    let frame = 0;
+    const refresh = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(async () => {
+        const current = await commands.currentSection();
+        setSection((prev) => {
+          const next = current ? { breakId: current.breakId, layout: { ...layout, ...current.layout } } : null;
+          return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
+        });
+      });
+    };
+    document.addEventListener("selectionchange", refresh);
+    refresh();
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener("selectionchange", refresh);
+    };
+  }, [commands, layout, version]);
+
   // ── Styles ───────────────────────────────────────────────────────────
 
   const saveStyles = useCallback(
@@ -339,14 +442,18 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
 
   // ── Page navigation ──────────────────────────────────────────────────
 
-  const stride = (pageSize(layout).height + PAGE_GAP) * zoom;
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
-    if (!el) return;
-    // The page under the upper third of the viewport.
-    const probe = el.scrollTop + el.clientHeight / 3;
-    setActivePage(Math.max(0, Math.min(Math.floor(probe / stride), pages.length - 1)));
-  }, [pages.length, stride]);
+    if (!el || pages.length === 0) return;
+    // The page under the upper third of the viewport (pages can differ in
+    // height across sections).
+    const probe = (el.scrollTop + el.clientHeight / 3) / zoom;
+    let index = 0;
+    pages.forEach((p, i) => {
+      if (p.top <= probe) index = i;
+    });
+    setActivePage(index);
+  }, [pages, zoom]);
 
   const selectPage = useCallback((index: number) => {
     setActivePage(index);
@@ -374,10 +481,22 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
         // Parse fully before touching anything — the importer throws on a
         // bad file and nothing is replaced unless there's content.
         const parsed = await parseDocx(file);
-        // Keep the source's explicit page breaks.
-        const blocks = parsed.pages.flatMap((page, i) =>
-          i === 0 ? page.blocks : [{ type: "pageBreak", data: {} }, ...page.blocks],
-        ) as EditorBlock[];
+        // Keep the source's page breaks; where the page setup changes, the
+        // break becomes a section break carrying the new layout.
+        const nextLayout: PageLayout = parsed.defaultLayout
+          ? { ...layout, ...parsed.defaultLayout }
+          : layout;
+        let effective = JSON.stringify({ ...nextLayout, ...(parsed.pages[0]?.layout ?? {}) });
+        const blocks = parsed.pages.flatMap((page, i) => {
+          if (i === 0) return page.blocks;
+          const pageLayout = JSON.stringify({ ...nextLayout, ...(page.layout ?? {}) });
+          const brk =
+            pageLayout !== effective
+              ? { type: "sectionBreak", data: { layout: { ...nextLayout, ...(page.layout ?? {}) } } }
+              : { type: "pageBreak", data: {} };
+          effective = pageLayout;
+          return [brk, ...page.blocks];
+        }) as EditorBlock[];
         if (!blocks.some((b) => b.type !== "pageBreak")) {
           throw new Error("The file doesn't contain any content we can import.");
         }
@@ -391,18 +510,18 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
         autosave.markDirty();
         await historyRef.current?.reset();
 
-        // Headers / footers and page setup are document metadata. They
-        // aren't rendered yet (headers & sections come in Phase 3), but
-        // keep them so nothing from the source file is lost.
-        const nextLayout: PageLayout = parsed.defaultLayout
-          ? { ...layout, ...parsed.defaultLayout }
-          : layout;
+        // Headers / footers and page setup are document metadata.
+        const nextSetup: PageSetup = {
+          ...pageSetup,
+          headers: { ...pageSetup.headers, default: parsed.headerBlocks as EditorBlock[] },
+          footers: { ...pageSetup.footers, default: parsed.footerBlocks as EditorBlock[] },
+        };
         const meta = await updateDocument(documentId, {
-          headerBlocks: parsed.headerBlocks,
-          footerBlocks: parsed.footerBlocks,
           defaultLayout: nextLayout,
+          pageSetup: nextSetup as unknown as Record<string, unknown>,
         });
         setLayout(meta.defaultLayout);
+        setPageSetup(cleanPageSetup(meta.pageSetup));
 
         const niceTitle = file.name.replace(/\.docx$/i, "");
         if (niceTitle) setTitle(niceTitle);
@@ -413,7 +532,7 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
         setBusy(false);
       }
     },
-    [autosave, documentId, layout, title],
+    [autosave, documentId, layout, pageSetup, title],
   );
 
   const handleExportClick = useCallback(async () => {
@@ -424,7 +543,7 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
       const out = await editor.save();
       const blob = await exportDocx(
         { time: Date.now(), blocks: out.blocks as never, version: out.version },
-        { title },
+        { title, defaultLayout: layout, pageSetup },
       );
       triggerDownload(blob, `${sanitizeFilename(title)}.docx`);
     } catch (err) {
@@ -433,7 +552,7 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
     } finally {
       setBusy(false);
     }
-  }, [title]);
+  }, [layout, pageSetup, title]);
 
   // ── Layout ───────────────────────────────────────────────────────────
 
@@ -447,6 +566,12 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
 
   const handleLayoutPatch = useCallback(
     (patch: Partial<PageLayout>) => {
+      // Inside a later section, Layout changes apply to that section
+      // (Word's default "Apply to: This section").
+      if (section && commands) {
+        void commands.setSectionLayout(section.breakId, { ...section.layout, ...patch });
+        return;
+      }
       const next = { ...layout, ...patch };
       setLayout(next); // optimistic; the server echoes the merged layout
       void handleLayoutApply(next).catch((err) => {
@@ -454,7 +579,7 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
         setLayout(layout);
       });
     },
-    [handleLayoutApply, layout],
+    [commands, handleLayoutApply, layout, section],
   );
 
   const handleBack = useCallback(async () => {
@@ -545,6 +670,14 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
         onTogglePainter={togglePainter}
         showStatusBar={showStatusBar}
         onToggleStatusBar={toggleStatusBar}
+        sectionLayout={section?.layout ?? null}
+        pageSetup={pageSetup}
+        onPageSetupChange={(patch) => updatePageSetup((prev) => ({ ...prev, ...patch }))}
+        editingHeaderFooter={editingHF}
+        onEditHeaderFooter={editHeaderFooter}
+        onCloseHeaderFooter={() => setEditingHF(null)}
+        onInsertField={insertField}
+        onInsertFootnote={() => void insertFootnote()}
       />
 
       <div className="doc-body">
@@ -561,6 +694,13 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
               ref={surfaceRef}
               initialBlocks={doc.blocks}
               layout={layout}
+              pageSetup={pageSetup}
+              title={title}
+              editingHeaderFooter={editingHF}
+              headerFooterEditorRef={hfEditorRef}
+              onEditHeaderFooter={setEditingHF}
+              onHeaderFooterChange={handleHeaderFooterChange}
+              onFootnoteChange={handleFootnoteChange}
               zoom={zoom}
               stylesCss={stylesCss}
               onReady={handleReady}

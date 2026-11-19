@@ -69,7 +69,7 @@ export function StylesDialog({ open, styles, onSave, onClose }: Props) {
             ))}
           </ul>
           <div className="tp-styles-form">
-            <label className="tp-field">
+            <label className="tp-form-field">
               <span className="layout-label">Font</span>
               <select
                 className="layout-select"
@@ -82,17 +82,17 @@ export function StylesDialog({ open, styles, onSave, onClose }: Props) {
                 ))}
               </select>
             </label>
-            <div className="tp-field-row">
-              <label className="tp-field">
+            <div className="tp-form-row">
+              <label className="tp-form-field">
                 <span className="layout-label">Size (px)</span>
                 <input className="layout-select" type="number" min={6} max={120} value={style.fontSize ?? ""} onChange={(e) => patch({ fontSize: num(e.target.value) })} />
               </label>
-              <label className="tp-field">
+              <label className="tp-form-field">
                 <span className="layout-label">Colour</span>
                 <input className="tp-color-input" type="color" value={toHex(style.color)} onChange={(e) => patch({ color: e.target.value })} />
               </label>
             </div>
-            <div className="tp-field-row">
+            <div className="tp-form-row">
               <label className="tp-check">
                 <input type="checkbox" checked={(style.fontWeight ?? 400) >= 600} onChange={(e) => patch({ fontWeight: e.target.checked ? 700 : 400 })} />
                 Bold
@@ -102,16 +102,16 @@ export function StylesDialog({ open, styles, onSave, onClose }: Props) {
                 Italic
               </label>
             </div>
-            <div className="tp-field-row">
-              <label className="tp-field">
+            <div className="tp-form-row">
+              <label className="tp-form-field">
                 <span className="layout-label">Line spacing</span>
                 <input className="layout-select" type="number" step={0.05} min={0.8} max={3} value={style.lineHeight ?? ""} onChange={(e) => patch({ lineHeight: num(e.target.value) })} />
               </label>
-              <label className="tp-field">
+              <label className="tp-form-field">
                 <span className="layout-label">Space before (px)</span>
                 <input className="layout-select" type="number" min={0} max={200} value={style.spaceBefore ?? ""} onChange={(e) => patch({ spaceBefore: num(e.target.value) })} />
               </label>
-              <label className="tp-field">
+              <label className="tp-form-field">
                 <span className="layout-label">Space after (px)</span>
                 <input className="layout-select" type="number" min={0} max={200} value={style.spaceAfter ?? ""} onChange={(e) => patch({ spaceAfter: num(e.target.value) })} />
               </label>

@@ -105,6 +105,9 @@ export async function textOutsidePages(page: Page) {
     for (let n = walker.nextNode(); n; n = walker.nextNode()) {
       if (!n.textContent?.trim()) continue;
       if ((n.parentElement as HTMLElement).closest(".tp-page-break")) continue;
+      // Raised / lowered glyphs (footnote numbers, x²) legitimately poke a
+      // pixel or two past their line box.
+      if ((n.parentElement as HTMLElement).closest("sup, sub")) continue;
       range.selectNodeContents(n);
       for (const r of Array.from(range.getClientRects())) {
         const top = r.top - origin;

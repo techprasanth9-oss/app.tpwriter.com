@@ -3,26 +3,38 @@
  */
 import {
   AlignmentType,
+  BorderStyle,
   LevelFormat,
   Document,
   ExternalHyperlink,
+  FileChild,
+  Footer,
+  FootnoteReferenceRun,
+  Header,
   HeadingLevel,
   ImageRun,
+  PageBorderOffsetFrom,
   PageBreak,
+  PageNumber,
+  PageOrientation,
   Packer,
   Paragraph,
   Table,
   TableCell,
+  TableOfContents,
   TableRow,
   TextRun,
   WidthType,
   type IRunOptions,
+  type ISectionOptions,
   type ParagraphChild,
 } from "docx";
+import type { PageLayout } from "~/lib/api/documents";
 import type { EditorBlock, EditorOutput } from "./importer";
 import { normalizeBlock } from "../normalize";
 import { isSafeLinkUrl } from "../safeUrl";
 import { cleanFormat, FORMAT_TUNE, INDENT_STEP_PX } from "../format/paragraphFormat";
+import type { HeaderFooterSet, PageBorder, PageSetup } from "../pageSetup";
 
 /** CSS px (96 dpi) → twips (1/1440 in). */
 const pxToTwip = (px: number) => Math.round(px * 15);
@@ -56,6 +68,106 @@ const HEADING_LEVELS: Record<number, (typeof HeadingLevel)[keyof typeof HeadingL
 
 export interface ExportOptions {
   title?: string;
+  /** Layout of the first section (later ones come from section breaks). */
+  defaultLayout?: PageLayout;
+  /** Headers / footers, footnotes, page colour and border. */
+  pageSetup?: PageSetup;
+}
+
+// ── Page layout ───────────────────────────────────────────────────────
+
+/** Exact portrait paper sizes in twips (docx swaps them for landscape). */
+const PAPER_TWIPS: Record<PageLayout["paperSize"], { w: number; h: number }> = {
+  A4: { w: 11906, h: 16838 },
+  LETTER: { w: 12240, h: 15840 },
+  LEGAL: { w: 12240, h: 20160 },
+  A3: { w: 16838, h: 23811 },
+  A5: { w: 8391, h: 11906 },
+};
+
+const FALLBACK_LAYOUT: PageLayout = {
+  paperSize: "A4",
+  orientation: "portrait",
+  marginTop: 96,
+  marginRight: 96,
+  marginBottom: 96,
+  marginLeft: 96,
+};
+
+/** Validate a stored layout (section breaks hold untrusted data). */
+function cleanLayout(raw: unknown, fallback: PageLayout = FALLBACK_LAYOUT): PageLayout {
+  const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const margin = (v: unknown, d: number) =>
+    typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1000 ? v : d;
+  return {
+    paperSize: Object.prototype.hasOwnProperty.call(PAPER_TWIPS, o.paperSize as string)
+      ? (o.paperSize as PageLayout["paperSize"])
+      : fallback.paperSize,
+    orientation:
+      o.orientation === "landscape" || o.orientation === "portrait"
+        ? o.orientation
+        : fallback.orientation,
+    marginTop: margin(o.marginTop, fallback.marginTop),
+    marginRight: margin(o.marginRight, fallback.marginRight),
+    marginBottom: margin(o.marginBottom, fallback.marginBottom),
+    marginLeft: margin(o.marginLeft, fallback.marginLeft),
+  };
+}
+
+const BORDER_STYLES: Record<PageBorder["style"], (typeof BorderStyle)[keyof typeof BorderStyle]> = {
+  solid: BorderStyle.SINGLE,
+  double: BorderStyle.DOUBLE,
+  dashed: BorderStyle.DASHED,
+  dotted: BorderStyle.DOTTED,
+};
+
+const hexColor = (c: string | null | undefined) =>
+  c && /^#[0-9a-f]{6}$/i.test(c) ? c.slice(1).toUpperCase() : undefined;
+
+function pageBorders(border: PageBorder | null | undefined) {
+  if (!border || !BORDER_STYLES[border.style]) return undefined;
+  const side = {
+    style: BORDER_STYLES[border.style],
+    // px → eighths of a point (Word allows 2–96).
+    size: Math.min(96, Math.max(2, Math.round(border.width * 0.75 * 8))),
+    color: hexColor(border.color) ?? "000000",
+    space: 24,
+  };
+  return {
+    pageBorders: { offsetFrom: PageBorderOffsetFrom.PAGE },
+    pageBorderTop: side,
+    pageBorderRight: side,
+    pageBorderBottom: side,
+    pageBorderLeft: side,
+  };
+}
+
+function sectionProperties(
+  layout: PageLayout,
+  setup: PageSetup | undefined,
+): NonNullable<ISectionOptions["properties"]> {
+  const paper = PAPER_TWIPS[layout.paperSize];
+  const borders = pageBorders(setup?.pageBorder);
+  return {
+    page: {
+      size: {
+        width: paper.w,
+        height: paper.h,
+        orientation:
+          layout.orientation === "landscape" ? PageOrientation.LANDSCAPE : PageOrientation.PORTRAIT,
+      },
+      margin: {
+        top: pxToTwip(layout.marginTop),
+        right: pxToTwip(layout.marginRight),
+        bottom: pxToTwip(layout.marginBottom),
+        left: pxToTwip(layout.marginLeft),
+        header: pxToTwip(setup?.headerDistance ?? 48),
+        footer: pxToTwip(setup?.footerDistance ?? 48),
+      },
+      ...(borders ? { borders } : {}),
+    },
+    ...(setup?.differentFirstPage ? { titlePage: true } : {}),
+  };
 }
 
 // docx only resolves a `numbering.reference` declared in the Document's
@@ -117,6 +229,17 @@ function orderedNumbering(reference: string, counter: Counter, start: number) {
 interface ExportContext {
   numbering: Map<string, ReturnType<typeof orderedNumbering>>;
   nextInstance: number;
+  /** Values for title / date fields. */
+  title: string;
+  date: string;
+  /** Footnote id → inline HTML (from pageSetup). */
+  footnoteHtml: Record<string, string>;
+  /** Footnote id → number, assigned in document order. */
+  footnoteNumbers: Map<string, number>;
+  footnotes: Record<string, { children: Paragraph[] }>;
+  /** Converting a header / footer / footnote: no footnote refs or TOC there. */
+  nested: boolean;
+  hasToc: boolean;
 }
 
 function numberingRef(ctx: ExportContext, counter: Counter, start: number): string {
@@ -131,37 +254,137 @@ export async function exportDocx(
   data: EditorOutput,
   opts: ExportOptions = {},
 ): Promise<Blob> {
-  const children: Array<Paragraph | Table> = [];
-  const ctx: ExportContext = { numbering: new Map(), nextInstance: 1 };
+  const setup = opts.pageSetup;
+  const title = opts.title || "Untitled document";
+  const ctx: ExportContext = {
+    numbering: new Map(),
+    nextInstance: 1,
+    title,
+    date: new Date().toLocaleDateString(),
+    footnoteHtml: setup?.footnotes ?? {},
+    footnoteNumbers: new Map(),
+    footnotes: {},
+    nested: false,
+    hasToc: false,
+  };
 
+  // A section break's layout applies to the section that follows it.
+  const firstLayout = cleanLayout(opts.defaultLayout);
+  const sections: Array<{ layout: PageLayout; children: FileChild[] }> = [
+    { layout: firstLayout, children: [] },
+  ];
   for (const block of data.blocks ?? []) {
+    if (block.type === "sectionBreak") {
+      const layout = (block.data as { layout?: unknown } | undefined)?.layout;
+      sections.push({ layout: cleanLayout(layout, firstLayout), children: [] });
+      continue;
+    }
     const converted = blockToDocx(block, ctx);
-    if (Array.isArray(converted)) children.push(...converted);
-    else if (converted) children.push(converted);
+    const target = sections[sections.length - 1]!.children;
+    if (Array.isArray(converted)) target.push(...converted);
+    else if (converted) target.push(converted);
   }
-
-  if (children.length === 0) children.push(new Paragraph({ children: [] }));
 
   const doc = new Document({
     creator: "TP Writer",
-    title: opts.title || "Untitled document",
+    title,
     numbering: { config: [...ctx.numbering.values()] },
-    sections: [{ properties: {}, children }],
+    footnotes: ctx.footnotes,
+    ...(setup?.differentOddEven ? { evenAndOddHeaderAndFooters: true } : {}),
+    ...(hexColor(setup?.pageColor) ? { background: { color: hexColor(setup?.pageColor)! } } : {}),
+    // Word fills a TOC field in only when asked to update fields on open.
+    ...(ctx.hasToc ? { features: { updateFields: true } } : {}),
+    // Watermarks aren't exported (docx has no simple text-watermark API).
+    sections: sections.map(({ layout, children }) => ({
+      properties: sectionProperties(layout, setup),
+      ...headersAndFooters(setup, ctx),
+      children: children.length > 0 ? children : [new Paragraph({ children: [] })],
+    })),
   });
 
   return Packer.toBlob(doc);
 }
 
+/** Header / footer content (same for every section). Built per section —
+ *  each section gets its own header parts. */
+function headersAndFooters(
+  setup: PageSetup | undefined,
+  ctx: ExportContext,
+): Pick<ISectionOptions, "headers" | "footers"> {
+  if (!setup) return {};
+  const variants = <T,>(set: HeaderFooterSet, make: (children: Array<Paragraph | Table>) => T) => {
+    const used =
+      set.default.length > 0 ||
+      (setup.differentFirstPage && set.first.length > 0) ||
+      (setup.differentOddEven && set.even.length > 0);
+    if (!used) return undefined;
+    return {
+      default: make(storyChildren(set.default, ctx)),
+      ...(setup.differentFirstPage ? { first: make(storyChildren(set.first, ctx)) } : {}),
+      ...(setup.differentOddEven ? { even: make(storyChildren(set.even, ctx)) } : {}),
+    };
+  };
+  const headers = variants(setup.headers, (children) => new Header({ children }));
+  const footers = variants(setup.footers, (children) => new Footer({ children }));
+  return { ...(headers ? { headers } : {}), ...(footers ? { footers } : {}) };
+}
+
+/** Blocks of a header / footer → paragraphs and tables. */
+function storyChildren(blocks: EditorBlock[], ctx: ExportContext): Array<Paragraph | Table> {
+  const out: Array<Paragraph | Table> = [];
+  const wasNested = ctx.nested;
+  ctx.nested = true;
+  try {
+    for (const block of blocks) {
+      const converted = blockToDocx(block, ctx);
+      for (const child of Array.isArray(converted) ? converted : converted ? [converted] : []) {
+        if (child instanceof Paragraph || child instanceof Table) out.push(child);
+      }
+    }
+  } finally {
+    ctx.nested = wasNested;
+  }
+  if (out.length === 0) out.push(new Paragraph({ children: [] }));
+  return out;
+}
+
+/** Plain text of an inline HTML string. */
+function textOf(html: string): string {
+  if (!html) return "";
+  return new DOMParser().parseFromString(html, "text/html").body.textContent ?? "";
+}
+
+/** Footnote number for a reference, creating the footnote on first use;
+ *  undefined when the ref can't be exported (no text, or not in the body). */
+function footnoteNumber(ctx: ExportContext, id: string): number | undefined {
+  if (ctx.nested) return undefined;
+  const existing = ctx.footnoteNumbers.get(id);
+  if (existing !== undefined) return existing;
+  const html = Object.prototype.hasOwnProperty.call(ctx.footnoteHtml, id)
+    ? ctx.footnoteHtml[id]
+    : undefined;
+  if (typeof html !== "string" || !textOf(html).trim()) return undefined;
+  const n = ctx.footnoteNumbers.size + 1;
+  ctx.footnoteNumbers.set(id, n);
+  ctx.nested = true;
+  try {
+    ctx.footnotes[String(n)] = { children: [new Paragraph({ children: inlineHtmlToRuns(html, ctx) })] };
+  } finally {
+    ctx.nested = false;
+  }
+  return n;
+}
+
 function blockToDocx(
   rawBlock: EditorBlock,
   ctx: ExportContext,
-): Paragraph | Table | Array<Paragraph | Table> | null {
+): FileChild | FileChild[] | null {
   // Fold legacy alignment/indent shapes into the format tune first.
   const block = normalizeBlock(rawBlock);
   switch (block.type) {
     case "paragraph": {
       return new Paragraph({
-        children: inlineHtmlToRuns(String(block.data.text ?? "")),
+        children: inlineHtmlToRuns(String(block.data.text ?? ""), ctx),
         ...formatOptions(block),
       });
     }
@@ -169,7 +392,7 @@ function blockToDocx(
       const level = Number(block.data.level ?? 2);
       return new Paragraph({
         heading: HEADING_LEVELS[level] ?? HeadingLevel.HEADING_2,
-        children: inlineHtmlToRuns(String(block.data.text ?? "")),
+        children: inlineHtmlToRuns(String(block.data.text ?? ""), ctx),
         ...formatOptions(block),
       });
     }
@@ -184,14 +407,15 @@ function blockToDocx(
         const counter = COUNTER_ALIASES[meta.counterType ?? ""] ?? "numeric";
         const start = Number.isInteger(meta.start) && meta.start! >= 1 ? meta.start! : 1;
         const list = { reference: numberingRef(ctx, counter, start), instance: ctx.nextInstance++ };
-        return flattenList(items, 0, { kind: "ordered", ...list });
+        return flattenList(items, 0, { kind: "ordered", ...list }, ctx);
       }
-      return flattenList(items, 0, { kind: style === "checklist" ? "checklist" : "bullet" });
+      return flattenList(items, 0, { kind: style === "checklist" ? "checklist" : "bullet" }, ctx);
     }
     case "table": {
       const content = (block.data.content as string[][]) ?? [];
       if (content.length === 0) return null;
-      const withHeadings = Boolean(block.data.withHeadings);
+      // TableTool saves `withHeading`; older data used `withHeadings`.
+      const withHeadings = Boolean(block.data.withHeading ?? block.data.withHeadings);
       return new Table({
         rows: content.map(
           (row, rowIdx) =>
@@ -201,7 +425,7 @@ function blockToDocx(
                 (cellHtml) =>
                   new TableCell({
                     children: [
-                      new Paragraph({ children: inlineHtmlToRuns(cellHtml) }),
+                      new Paragraph({ children: inlineHtmlToRuns(cellHtml, ctx) }),
                     ],
                   }),
               ),
@@ -226,6 +450,27 @@ function blockToDocx(
         children: [new TextRun({ text: "⸻", color: "9CA3AF" })],
         alignment: AlignmentType.CENTER,
       });
+    }
+    case "toc": {
+      if (ctx.nested) return null;
+      const n = Number(block.data.maxLevel);
+      const maxLevel = Number.isInteger(n) && n >= 1 && n <= 4 ? n : 3;
+      const title = textOf(typeof block.data.title === "string" ? block.data.title : "").trim();
+      ctx.hasToc = true;
+      return [
+        ...(title
+          ? [
+              new Paragraph({
+                children: [new TextRun({ text: title, bold: true, size: 32 })],
+                spacing: { after: 240 },
+              }),
+            ]
+          : []),
+        new TableOfContents(title || "Table of Contents", {
+          hyperlink: true,
+          headingStyleRange: `1-${maxLevel}`,
+        }),
+      ];
     }
     default:
       return null;
@@ -260,10 +505,15 @@ type ListKind =
   | { kind: "bullet" }
   | { kind: "checklist" };
 
-function flattenList(items: ListItem[], depth: number, list: ListKind): Paragraph[] {
+function flattenList(
+  items: ListItem[],
+  depth: number,
+  list: ListKind,
+  ctx: ExportContext,
+): Paragraph[] {
   const out: Paragraph[] = [];
   for (const item of items) {
-    const runs = inlineHtmlToRuns(item.content ?? "");
+    const runs = inlineHtmlToRuns(item.content ?? "", ctx);
     if (list.kind === "checklist") {
       // Word has no portable checklist list type; a box glyph keeps it
       // readable and printable.
@@ -280,7 +530,7 @@ function flattenList(items: ListItem[], depth: number, list: ListKind): Paragrap
       }),
     );
     if (Array.isArray(item.items) && item.items.length > 0) {
-      out.push(...flattenList(item.items, depth + 1, list));
+      out.push(...flattenList(item.items, depth + 1, list, ctx));
     }
   }
   return out;
@@ -338,14 +588,14 @@ function typeFromMime(mime: string): "png" | "jpg" | "gif" | "bmp" | null {
   }
 }
 
-function inlineHtmlToRuns(html: string): ParagraphChild[] {
+function inlineHtmlToRuns(html: string, ctx?: ExportContext): ParagraphChild[] {
   if (!html) return [];
   const doc = new DOMParser().parseFromString(
     `<!doctype html><html><body>${html}</body></html>`,
     "text/html",
   );
   const runs: ParagraphChild[] = [];
-  walkInline(doc.body, {}, runs);
+  walkInline(doc.body, {}, runs, ctx);
   return runs;
 }
 
@@ -412,7 +662,29 @@ function styleFromCss(el: HTMLElement, base: RunStyle): RunStyle {
   return next;
 }
 
-function walkInline(node: Node, style: RunStyle, out: ParagraphChild[]): void {
+/** A field chip → a Word field (page numbers) or its text now. */
+function fieldRun(kind: string, style: RunStyle, ctx: ExportContext | undefined): TextRun | null {
+  const base = toRunOptions(style);
+  switch (kind) {
+    case "page":
+      return new TextRun({ ...base, children: [PageNumber.CURRENT] });
+    case "pages":
+      return new TextRun({ ...base, children: [PageNumber.TOTAL_PAGES] });
+    case "date":
+      return new TextRun({ ...base, text: ctx?.date ?? new Date().toLocaleDateString() });
+    case "title":
+      return new TextRun({ ...base, text: ctx?.title ?? "" });
+    default:
+      return null;
+  }
+}
+
+function walkInline(
+  node: Node,
+  style: RunStyle,
+  out: ParagraphChild[],
+  ctx?: ExportContext,
+): void {
   for (const child of Array.from(node.childNodes)) {
     if (child.nodeType === Node.TEXT_NODE) {
       const text = child.textContent ?? "";
@@ -426,6 +698,11 @@ function walkInline(node: Node, style: RunStyle, out: ParagraphChild[]): void {
       out.push(new TextRun({ text: "", break: 1 }));
       continue;
     }
+    if (tag === "sup" && el.classList.contains("tp-fn-ref")) {
+      const n = ctx ? footnoteNumber(ctx, el.getAttribute("data-fn-id") ?? "") : undefined;
+      if (n !== undefined) out.push(new FootnoteReferenceRun(n));
+      continue;
+    }
     let next: RunStyle = { ...style };
     if (tag === "b" || tag === "strong") next.bold = true;
     else if (tag === "i" || tag === "em") next.italics = true;
@@ -436,10 +713,18 @@ function walkInline(node: Node, style: RunStyle, out: ParagraphChild[]): void {
     else if (tag === "mark") next.highlight = "yellow";
     if (el.getAttribute("style")) next = styleFromCss(el, next);
 
+    if (tag === "span" && el.classList.contains("tp-field")) {
+      const run = fieldRun(el.getAttribute("data-field") ?? "", next, ctx);
+      if (run) {
+        out.push(run);
+        continue;
+      }
+    }
+
     if (tag === "a") {
       const href = el.getAttribute("href") ?? "";
       const runs: ParagraphChild[] = [];
-      walkInline(el, { ...next, underline: true, color: next.color ?? "0563C1" }, runs);
+      walkInline(el, { ...next, underline: true, color: next.color ?? "0563C1" }, runs, ctx);
       if (isSafeLinkUrl(href) && /^(https?:|mailto:|tel:)/i.test(href)) {
         out.push(new ExternalHyperlink({ link: href, children: runs as TextRun[] }));
       } else {
@@ -447,7 +732,7 @@ function walkInline(node: Node, style: RunStyle, out: ParagraphChild[]): void {
       }
       continue;
     }
-    walkInline(el, next, out);
+    walkInline(el, next, out, ctx);
   }
 }
 

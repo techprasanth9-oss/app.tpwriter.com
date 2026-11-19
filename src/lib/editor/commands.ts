@@ -1,4 +1,5 @@
 import type EditorJS from "@editorjs/editorjs";
+import type { PageLayout } from "~/lib/api/documents";
 import type { BlockAPI } from "@editorjs/editorjs";
 import { FORMAT_TUNE, MAX_INDENT, type Alignment, type ParagraphFormat } from "./format/paragraphFormat";
 import { FORMAT_EVENT, type FormatPatch } from "./tools/ParagraphFormatTune";
@@ -287,6 +288,64 @@ export class EditorCommands {
     this.editor.blocks.insert(type, data, undefined, index >= 0 ? index + 1 : undefined, true);
   }
 
+  /** Section break (next page); the following section uses `layout`. */
+  async insertSectionBreak(layout: Partial<PageLayout>): Promise<void> {
+    await this.history.record();
+    const index = this.currentIndex();
+    const at = index >= 0 ? index + 1 : this.editor.blocks.getBlocksCount();
+    this.editor.blocks.insert("sectionBreak", { layout }, undefined, at, false);
+    this.editor.blocks.insert("paragraph", { text: "" }, undefined, at + 1, true);
+  }
+
+  /**
+   * The section-break block that starts the caret's section, or null when
+   * the caret is in the first section (whose layout is the document's).
+   */
+  async currentSection(): Promise<{ breakId: string; layout: Partial<PageLayout> } | null> {
+    const index = this.currentIndex();
+    for (let i = index; i >= 0; i--) {
+      const block = this.editor.blocks.getBlockByIndex(i);
+      if (block?.name !== "sectionBreak" || i === index) continue;
+      const data = ((await block.save())?.data ?? {}) as { layout?: Partial<PageLayout> };
+      return { breakId: block.id, layout: data.layout ?? {} };
+    }
+    return null;
+  }
+
+  async setSectionLayout(breakId: string, layout: Partial<PageLayout>): Promise<void> {
+    await this.history.record();
+    await this.editor.blocks.update(breakId, { layout });
+  }
+
+  async insertTableOfContents(maxLevel = 3): Promise<void> {
+    await this.history.record();
+    const index = this.currentIndex();
+    this.editor.blocks.insert("toc", { maxLevel, title: "Contents" }, undefined, index >= 0 ? index : 0, false);
+  }
+
+  /** Insert a footnote reference at the caret; returns its id (the caller
+   *  creates the note text). */
+  async insertFootnote(): Promise<string | null> {
+    const range = this.restoreSelection();
+    if (!range || !editableRoot(range.startContainer)) return null;
+    await this.history.record();
+    const id = `fn${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const ref = document.createElement("sup");
+    ref.className = "tp-fn-ref";
+    ref.dataset.fnId = id;
+    ref.contentEditable = "false";
+    ref.dataset.mutationFree = "true";
+    ref.textContent = "*";
+    range.collapse(false);
+    range.insertNode(ref);
+    range.setStartAfter(ref);
+    range.collapse(true);
+    setSelection(range);
+    // The ref's own mutations are ignored by EditorJS; nudge a change.
+    editableRoot(ref)?.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    return id;
+  }
+
   async insertPageBreak(): Promise<void> {
     await this.history.record();
     const index = this.currentIndex();
@@ -351,7 +410,8 @@ export class EditorCommands {
       }
     };
     return {
-      font: cs ? fontLabelFor(cs.fontFamily) : null,
+      // No caret in the document yet: show the default font, not "(mixed)".
+      font: cs ? fontLabelFor(cs.fontFamily) : FONT_OPTIONS[0]!.label,
       sizePt: Math.round(((px || 16) * 0.75) * 2) / 2,
       bold: query("bold"),
       italic: query("italic"),

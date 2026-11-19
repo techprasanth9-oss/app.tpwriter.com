@@ -2,6 +2,8 @@ import JSZip from "jszip";
 import { describe, expect, it } from "vitest";
 import { exportDocx } from "./exporter";
 import { importDocx } from "./importer";
+import { DEFAULT_PAGE_SETUP, type PageSetup } from "../pageSetup";
+import type { PageLayout } from "~/lib/api/documents";
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -146,3 +148,153 @@ describe("exportDocx", () => {
   });
 });
 
+
+describe("exportDocx page features", () => {
+  const layout = (over: Partial<PageLayout> = {}): PageLayout => ({
+    paperSize: "A4",
+    orientation: "portrait",
+    marginTop: 96,
+    marginRight: 96,
+    marginBottom: 96,
+    marginLeft: 96,
+    ...over,
+  });
+  let nextId = 0;
+  const p = (text: string) => ({ id: `b${nextId++}`, type: "paragraph", data: { text } });
+  const setup = (over: Partial<PageSetup>): PageSetup => ({ ...DEFAULT_PAGE_SETUP, ...over });
+
+  async function unzip(blob: Blob) {
+    const zip = await JSZip.loadAsync(blob);
+    const read = async (name: string) => (await zip.file(name)?.async("string")) ?? "";
+    const files = Object.keys(zip.files);
+    return { zip, read, files };
+  }
+
+  it("splits sections at section breaks with their own size and orientation", async () => {
+    const blob = await exportDocx(
+      {
+        blocks: [
+          p("first"),
+          { type: "sectionBreak", data: { layout: layout({ paperSize: "LETTER", orientation: "landscape", marginLeft: 48 }) } },
+          p("second"),
+        ],
+      },
+      { defaultLayout: layout(), pageSetup: setup({ headerDistance: 32 }) },
+    );
+    const { read } = await unzip(blob);
+    const doc = await read("word/document.xml");
+    const sizes = [...doc.matchAll(/<w:pgSz ([^>]*)\/>/g)].map((m) => m[1]!);
+    expect(sizes).toHaveLength(2);
+    expect(sizes[0]).toContain('w:w="11906"');
+    expect(sizes[0]).toContain('w:h="16838"');
+    expect(sizes[0]).toContain('w:orient="portrait"');
+    expect(sizes[1]).toContain('w:w="15840"');
+    expect(sizes[1]).toContain('w:h="12240"');
+    expect(sizes[1]).toContain('w:orient="landscape"');
+    expect(doc).toContain('w:left="720"');
+    expect(doc).toContain('w:header="480"');
+    // The first section ends at the "first" paragraph (its sectPr sits in
+    // that paragraph's pPr); the body's final sectPr follows "second".
+    expect(doc.indexOf('w:orient="portrait"')).toBeLessThan(doc.indexOf(">first<"));
+    expect(doc.indexOf(">second<")).toBeLessThan(doc.indexOf('w:orient="landscape"'));
+  });
+
+  it("exports headers with page fields, first-page and even variants", async () => {
+    const field = (kind: string) =>
+      `<span class="tp-field" data-field="${kind}" contenteditable="false">#</span>`;
+    const blob = await exportDocx(
+      { blocks: [p("body")] },
+      {
+        title: "My Doc",
+        pageSetup: setup({
+          differentFirstPage: true,
+          differentOddEven: true,
+          headers: {
+            default: [p(`Page ${field("page")} of ${field("pages")}`)],
+            first: [p(`Cover ${field("title")}`)],
+            even: [p("Even header")],
+          },
+          footers: { default: [p(`Printed ${field("date")}`)], first: [], even: [] },
+        }),
+      },
+    );
+    const { read, files } = await unzip(blob);
+    const headers = await Promise.all(
+      files.filter((f) => /^word\/header\d+\.xml$/.test(f)).map(read),
+    );
+    const all = headers.join("\n");
+    expect(all).toContain("w:fldChar");
+    expect(all).toMatch(/PAGE/);
+    expect(all).toMatch(/NUMPAGES/);
+    expect(all).toContain("Cover ");
+    expect(all).toContain("My Doc");
+    expect(all).toContain("Even header");
+    const footers = await Promise.all(files.filter((f) => /^word\/footer\d+\.xml$/.test(f)).map(read));
+    expect(footers.join("")).toContain(new Date().toLocaleDateString());
+
+    const doc = await read("word/document.xml");
+    expect(doc).toContain("<w:titlePg");
+    expect(doc).toMatch(/<w:headerReference [^>]*w:type="first"/);
+    expect(doc).toMatch(/<w:headerReference [^>]*w:type="even"/);
+    expect(await read("word/settings.xml")).toContain("<w:evenAndOddHeaders");
+  });
+
+  it("exports footnote references and their text", async () => {
+    const ref = (id: string) => `<sup class="tp-fn-ref" data-fn-id="${id}" contenteditable="false">1</sup>`;
+    const blob = await exportDocx(
+      { blocks: [p(`Claim${ref("b")} and another${ref("a")} and empty${ref("none")}`)] },
+      {
+        pageSetup: setup({
+          footnotes: { a: "Second <b>note</b>", b: "First note", none: "  " },
+          headers: { default: [p(`hdr${ref("a")}`)], first: [], even: [] },
+        }),
+      },
+    );
+    const { read } = await unzip(blob);
+    const doc = await read("word/document.xml");
+    const refs = [...doc.matchAll(/<w:footnoteReference w:id="(\d+)"\/>/g)].map((m) => m[1]);
+    expect(refs).toEqual(["1", "2"]);
+    // The ref's placeholder digit isn't exported as text.
+    expect(doc).not.toMatch(/>1<\/w:t>/);
+    const notes = await read("word/footnotes.xml");
+    expect(notes).toContain("First note");
+    expect(notes).toContain("Second ");
+    expect(notes.indexOf("First note")).toBeLessThan(notes.indexOf("Second "));
+    const header = await read("word/header1.xml");
+    expect(header).toContain("hdr");
+    expect(header).not.toContain("footnoteReference");
+  });
+
+  it("exports a table of contents field and asks Word to update fields", async () => {
+    const blob = await exportDocx({
+      blocks: [
+        { type: "toc", data: { maxLevel: 2, title: "Contents" } },
+        { type: "header", data: { text: "Intro", level: 1 } },
+      ],
+    });
+    const { read } = await unzip(blob);
+    const doc = await read("word/document.xml");
+    expect(doc).toContain("Contents");
+    expect(doc).toContain("w:fldCharType=\"begin\"");
+    expect(doc).toContain('\\o &quot;1-2&quot;');
+    expect(await read("word/settings.xml")).toContain("<w:updateFields");
+  });
+
+  it("exports page colour and page border", async () => {
+    const blob = await exportDocx(
+      { blocks: [p("x")] },
+      {
+        pageSetup: setup({
+          pageColor: "#fef3c7",
+          pageBorder: { style: "double", width: 2, color: "#ff0000" },
+        }),
+      },
+    );
+    const { read } = await unzip(blob);
+    const doc = await read("word/document.xml");
+    expect(doc).toMatch(/<w:background [^>]*w:color="FEF3C7"/);
+    expect(doc).toContain("<w:pgBorders");
+    expect(doc).toMatch(/<w:top [^>]*w:val="double"[^>]*/);
+    expect(doc).toContain('w:color="FF0000"');
+  });
+});

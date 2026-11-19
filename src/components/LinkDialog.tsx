@@ -63,12 +63,12 @@ export function LinkDialog({ open, initialUrl, selectedText, onApply, onRemove, 
           }}
         >
           {askText && (
-            <label className="tp-field">
+            <label className="tp-form-field">
               <span className="layout-label">Text to display</span>
               <input className="layout-select" value={text} onChange={(e) => setText(e.target.value)} placeholder="Link text" />
             </label>
           )}
-          <label className="tp-field">
+          <label className="tp-form-field">
             <span className="layout-label">Address</span>
             <input
               ref={urlRef}

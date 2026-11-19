@@ -1726,8 +1726,10 @@ body {
 .doc-scroll { position: relative; }
 
 .tp-small-dialog { max-width: 440px; }
-.tp-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; flex: 1 1 0; }
-.tp-field-row { display: flex; gap: 12px; flex-wrap: wrap; }
+/* Dialog form fields (not to be confused with .tp-field, the page-number /
+   date field atoms stored in documents). */
+.tp-form-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; flex: 1 1 0; }
+.tp-form-row { display: flex; gap: 12px; flex-wrap: wrap; }
 .tp-check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; margin: 4px 16px 12px 0; }
 .tp-btn-left { margin-right: auto; }
 .tp-color-input { width: 48px; height: 36px; padding: 2px; border: 1px solid var(--tp-rule); border-radius: 5px; background: var(--tp-paper); }
@@ -1837,3 +1839,160 @@ body {
 .tp-wordcount dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; color: var(--tp-ink); }
 
 .tp-painter-armed .tp-flow { cursor: copy; }
+
+/* ──────────────────────────────────────────────────────────────────
+   Phase 3: page chrome — headers/footers, footnotes, decoration,
+   section breaks, table of contents
+   ────────────────────────────────────────────────────────────────── */
+
+.tp-sheet { overflow: hidden; }
+.tp-sheet-border { position: absolute; inset: 24px; pointer-events: none; }
+.tp-watermark {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(-38deg);
+  font-family: var(--tp-font-sans);
+  font-size: 88px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Above the text layer; only the zones themselves take pointer input. */
+.tp-overlay { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+.tp-page-overlay { position: absolute; }
+
+.tp-hf {
+  position: absolute;
+  pointer-events: auto;
+  border: 1px dashed transparent;
+  border-radius: 2px;
+  color: var(--tp-ink);
+  font-size: 13px;
+}
+.tp-hf:hover { border-color: var(--tp-rule-strong); cursor: text; }
+.tp-hf--footer { display: flex; flex-direction: column; justify-content: flex-end; }
+.tp-hf.is-editing {
+  border-color: var(--tp-accent);
+  background: var(--tp-paper);
+  z-index: 3;
+}
+.tp-hf-tag {
+  position: absolute;
+  left: -1px;
+  padding: 1px 6px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #fff;
+  background: var(--tp-accent);
+  border-radius: 2px 2px 0 0;
+}
+.tp-hf--header .tp-hf-tag { bottom: 100%; }
+.tp-hf--footer .tp-hf-tag { top: 100%; border-radius: 0 0 2px 2px; }
+.tp-hf-static .ce-paragraph { margin: 0; padding: 1px 0; font-size: 13px; }
+.tp-hf-static p { margin: 0; }
+.tp-hf-editor .codex-editor__redactor { padding-bottom: 0 !important; }
+.tp-hf-editor .ce-block__content,
+.tp-hf-editor .ce-toolbar__content { max-width: none !important; margin: 0 !important; }
+.tp-hf-editor .ce-paragraph { font-size: 13px; padding: 1px 0; }
+
+/* Body text dims while a header / footer is being edited (as in Word). */
+.tp-editing-hf .tp-flow { opacity: 0.45; }
+
+.tp-field {
+  background: rgba(194, 65, 12, 0.08);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.tp-footnotes {
+  position: absolute;
+  pointer-events: auto;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--tp-ink);
+  border-top: 1px solid var(--tp-rule-strong);
+  padding-top: 6px;
+  box-sizing: border-box;
+}
+.tp-footnotes .tp-fn { display: flex; gap: 6px; margin-bottom: 2px; }
+.tp-fn__num { font-size: 10px; vertical-align: super; min-width: 12px; color: var(--tp-slate); }
+.tp-fn__text { flex: 1 1 auto; min-width: 0; outline: none; }
+.tp-fn__text:focus { background: var(--tp-accent-faint); }
+.tp-footnotes--measure {
+  position: absolute;
+  top: 0;
+  left: -10000px;
+  visibility: hidden;
+  pointer-events: none;
+  height: auto !important;
+  border-top-width: 1px;
+}
+
+.tp-fn-ref {
+  font-size: 0.7em;
+  vertical-align: super;
+  color: var(--tp-accent);
+  font-weight: 600;
+  padding: 0 1px;
+  cursor: default;
+}
+
+.tp-section-break {
+  position: relative;
+  height: 18px;
+  margin: 6px 0;
+  border-top: 2px double var(--tp-rule-strong);
+  user-select: none;
+}
+.tp-section-break__label {
+  position: absolute;
+  top: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0 8px;
+  background: var(--tp-paper);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--tp-mute);
+}
+@media print {
+  .tp-section-break { visibility: hidden; }
+}
+
+.tp-toc { padding: 4px 0 8px; user-select: none; }
+.tp-toc__title {
+  font-family: var(--tp-font-serif);
+  font-size: 22px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.page-canvas .tp-toc__entry,
+.tp-toc__entry {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 2px 0;
+  color: var(--tp-ink);
+  text-decoration: none;
+  font-weight: inherit;
+}
+.tp-toc__entry:hover .tp-toc__text { text-decoration: underline; }
+.tp-toc__entry--l2 { padding-left: 20px; }
+.tp-toc__entry--l3 { padding-left: 40px; }
+.tp-toc__entry--l4 { padding-left: 60px; }
+.page-canvas .tp-toc__entry--l1 { font-weight: 600; }
+.tp-toc__leader { flex: 1 1 auto; border-bottom: 1px dotted var(--tp-rule-strong); transform: translateY(-4px); }
+.tp-toc__page { font-variant-numeric: tabular-nums; }
+.tp-toc__empty { font-size: 13px; color: var(--tp-mute); font-style: italic; }
+
+.rb-tab.is-contextual { color: var(--tp-accent); font-weight: 600; }
+.rb-check { margin: 2px 8px 2px 0; font-size: 12.5px; }
+/* Field shading is an editing aid only (as in Word). */
+.tp-hf-static .tp-field { background: none; padding: 0; }

@@ -38,6 +38,8 @@ export interface DocumentMeta {
   footerBlocks: unknown[];
   /** Named-style overrides (see lib/editor/styles/namedStyles.ts). */
   styles: Record<string, unknown>;
+  /** Headers/footers, decoration, footnotes (see lib/editor/pageSetup.ts). */
+  pageSetup: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
 }
@@ -79,6 +81,7 @@ export interface UpdateDocumentPatch {
   headerBlocks?: unknown[];
   footerBlocks?: unknown[];
   styles?: Record<string, unknown>;
+  pageSetup?: Record<string, unknown>;
 }
 
 export function updateDocument(id: string, patch: UpdateDocumentPatch): Promise<DocumentMeta> {

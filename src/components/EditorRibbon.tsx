@@ -4,6 +4,8 @@ import type { BlockState, EditorCommands, InlineState, ListCounter } from "~/lib
 import { FONT_OPTIONS, FONT_SIZES_PT } from "~/lib/editor/format/inlineStyle";
 import type { Alignment } from "~/lib/editor/format/paragraphFormat";
 import { DEFAULT_STYLES, type StyleId } from "~/lib/editor/styles/namedStyles";
+import type { FieldKind, PageSetup } from "~/lib/editor/pageSetup";
+import type { HeaderFooterTarget } from "./PageChrome";
 import { ColorMenu, Dropdown, MenuItem, RibbonButton, RibbonGroup } from "./ribbon/controls";
 import "./ribbon/ribbon.css";
 
@@ -12,7 +14,7 @@ import "./ribbon/ribbon.css";
  * changes land in block data / tunes / saved HTML and persist.
  */
 
-type Tab = "home" | "insert" | "layout" | "view";
+type Tab = "home" | "insert" | "layout" | "references" | "view" | "headerFooter";
 
 interface Props {
   commands: EditorCommands | null;
@@ -28,7 +30,26 @@ interface Props {
   onTogglePainter: () => void;
   showStatusBar: boolean;
   onToggleStatusBar: () => void;
+  /** Layout of the caret's section when it isn't the first one. */
+  sectionLayout: PageLayout | null;
+  pageSetup: PageSetup;
+  onPageSetupChange: (patch: Partial<PageSetup>) => void;
+  editingHeaderFooter: HeaderFooterTarget | null;
+  onEditHeaderFooter: (area: "header" | "footer") => void;
+  onCloseHeaderFooter: () => void;
+  onInsertField: (kind: FieldKind) => void;
+  onInsertFootnote: () => void;
 }
+
+const WATERMARKS = ["CONFIDENTIAL", "DRAFT", "DO NOT COPY", "SAMPLE", "URGENT"];
+
+const BORDERS: Array<{ label: string; value: PageSetup["pageBorder"] }> = [
+  { label: "None", value: null },
+  { label: "Box — thin", value: { style: "solid", width: 1, color: "#0f172a" } },
+  { label: "Box — thick", value: { style: "solid", width: 3, color: "#0f172a" } },
+  { label: "Double", value: { style: "double", width: 4, color: "#0f172a" } },
+  { label: "Dashed", value: { style: "dashed", width: 1, color: "#475569" } },
+];
 
 const STYLE_OPTIONS: StyleId[] = ["normal", "title", "subtitle", "heading1", "heading2", "heading3", "heading4", "quote"];
 
@@ -85,6 +106,15 @@ const MOD = isMac ? "⌘" : "Ctrl+";
 export function EditorRibbon(props: Props) {
   const { commands } = props;
   const [tab, setTab] = useState<Tab>("home");
+  // Layout controls show (and change) the caret's section.
+  const layout = props.sectionLayout ?? props.layout;
+  const editingHF = props.editingHeaderFooter !== null;
+
+  // The contextual Header & Footer tab appears while one is being edited.
+  useEffect(() => {
+    if (editingHF) setTab("headerFooter");
+    else setTab((t) => (t === "headerFooter" ? "home" : t));
+  }, [editingHF]);
   const [block, setBlock] = useState<BlockState>(EMPTY_BLOCK);
   const [inline, setInline] = useState<InlineState>(EMPTY_INLINE);
 
@@ -127,17 +157,24 @@ export function EditorRibbon(props: Props) {
   return (
     <div className="rb" aria-label="Ribbon">
       <div className="rb-tabs" role="tablist" aria-label="Ribbon tabs">
-        {(["home", "insert", "layout", "view"] as const).map((t) => (
+        {([
+          ["home", "Home"],
+          ["insert", "Insert"],
+          ["layout", "Layout"],
+          ["references", "References"],
+          ["view", "View"],
+          ...(editingHF ? [["headerFooter", "Header & Footer"]] : []),
+        ] as Array<[Tab, string]>).map(([t, label]) => (
           <button
             key={t}
             type="button"
             role="tab"
             aria-selected={tab === t}
-            className={`rb-tab${tab === t ? " is-active" : ""}`}
+            className={`rb-tab${tab === t ? " is-active" : ""}${t === "headerFooter" ? " is-contextual" : ""}`}
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => setTab(t)}
           >
-            {t[0]!.toUpperCase() + t.slice(1)}
+            {label}
           </button>
         ))}
       </div>
@@ -300,6 +337,100 @@ export function EditorRibbon(props: Props) {
               <RibbonButton label={`Page break (${MOD}Enter)`} wide onClick={run((c) => c.insertPageBreak())} disabled={off}>⤓</RibbonButton>
               <RibbonButton label="Horizontal line" wide onClick={run((c) => c.insertBlock("horizontalLine"))} disabled={off}>—</RibbonButton>
             </RibbonGroup>
+            <RibbonGroup label="Header & footer">
+              <RibbonButton label="Header" wide onClick={() => props.onEditHeaderFooter("header")} disabled={off}>▔</RibbonButton>
+              <RibbonButton label="Footer" wide onClick={() => props.onEditHeaderFooter("footer")} disabled={off}>▁</RibbonButton>
+              <RibbonButton
+                label="Page number"
+                wide
+                onClick={() => {
+                  props.onEditHeaderFooter("footer");
+                  window.setTimeout(() => props.onInsertField("page"), 250);
+                }}
+                disabled={off}
+              >
+                #
+              </RibbonButton>
+            </RibbonGroup>
+          </>
+        )}
+
+        {tab === "references" && (
+          <>
+            <RibbonGroup label="Table of contents">
+              <Dropdown label="Table of contents" trigger={<span>☰ Table of contents</span>} wide disabled={off}>
+                {(close) => (
+                  <>
+                    {[1, 2, 3, 4].map((n) => (
+                      <MenuItem key={n} onSelect={() => { close(); void run((c) => c.insertTableOfContents(n))(); }}>
+                        Headings 1–{n}
+                      </MenuItem>
+                    ))}
+                  </>
+                )}
+              </Dropdown>
+            </RibbonGroup>
+            <RibbonGroup label="Footnotes">
+              <RibbonButton label="Insert footnote" wide onClick={props.onInsertFootnote} disabled={off}>¹</RibbonButton>
+            </RibbonGroup>
+          </>
+        )}
+
+        {tab === "headerFooter" && (
+          <>
+            <RibbonGroup label="Options">
+              <label className="tp-check rb-check">
+                <input
+                  type="checkbox"
+                  checked={props.pageSetup.differentFirstPage}
+                  onChange={(e) => props.onPageSetupChange({ differentFirstPage: e.target.checked })}
+                />
+                Different first page
+              </label>
+              <label className="tp-check rb-check">
+                <input
+                  type="checkbox"
+                  checked={props.pageSetup.differentOddEven}
+                  onChange={(e) => props.onPageSetupChange({ differentOddEven: e.target.checked })}
+                />
+                Different odd & even pages
+              </label>
+            </RibbonGroup>
+            <RibbonGroup label="Insert">
+              <RibbonButton label="Page number" wide onClick={() => props.onInsertField("page")}>#</RibbonButton>
+              <RibbonButton label="Page count" wide onClick={() => props.onInsertField("pages")}>##</RibbonButton>
+              <RibbonButton label="Date" wide onClick={() => props.onInsertField("date")}>📅</RibbonButton>
+              <RibbonButton label="Document title" wide onClick={() => props.onInsertField("title")}>T</RibbonButton>
+            </RibbonGroup>
+            <RibbonGroup label="Position">
+              <label className="rb-field">
+                <span>Header from top (in)</span>
+                <input
+                  className="rb-select rb-select-narrow"
+                  type="number"
+                  step={0.1}
+                  min={0}
+                  max={2}
+                  value={+(props.pageSetup.headerDistance / 96).toFixed(2)}
+                  onChange={(e) => props.onPageSetupChange({ headerDistance: Math.round(Number(e.target.value) * 96) })}
+                />
+              </label>
+              <label className="rb-field">
+                <span>Footer from bottom (in)</span>
+                <input
+                  className="rb-select rb-select-narrow"
+                  type="number"
+                  step={0.1}
+                  min={0}
+                  max={2}
+                  value={+(props.pageSetup.footerDistance / 96).toFixed(2)}
+                  onChange={(e) => props.onPageSetupChange({ footerDistance: Math.round(Number(e.target.value) * 96) })}
+                />
+              </label>
+            </RibbonGroup>
+            <RibbonGroup label="Close">
+              <RibbonButton label="Close header and footer (Esc)" wide onClick={props.onCloseHeaderFooter}>✕</RibbonButton>
+            </RibbonGroup>
           </>
         )}
 
@@ -308,7 +439,7 @@ export function EditorRibbon(props: Props) {
             <RibbonGroup label="Page setup">
               <label className="rb-field">
                 <span>Size</span>
-                <select className="rb-select" value={props.layout.paperSize} onChange={(e) => props.onLayoutChange({ paperSize: e.target.value as PaperSize })}>
+                <select className="rb-select" value={layout.paperSize} onChange={(e) => props.onLayoutChange({ paperSize: e.target.value as PaperSize })}>
                   {PAPER.map((p) => (
                     <option key={p.value} value={p.value}>{p.label}</option>
                   ))}
@@ -318,7 +449,7 @@ export function EditorRibbon(props: Props) {
                 <span>Orientation</span>
                 <select
                   className="rb-select"
-                  value={props.layout.orientation}
+                  value={layout.orientation}
                   onChange={(e) => props.onLayoutChange({ orientation: e.target.value as PageLayout["orientation"] })}
                 >
                   <option value="portrait">Portrait</option>
@@ -329,7 +460,7 @@ export function EditorRibbon(props: Props) {
                 <span>Margins</span>
                 <select
                   className="rb-select"
-                  value={MARGINS.find((m) => [props.layout.marginTop, props.layout.marginRight, props.layout.marginBottom, props.layout.marginLeft].every((v) => v === m.px))?.label ?? "Custom"}
+                  value={MARGINS.find((m) => [layout.marginTop, layout.marginRight, layout.marginBottom, layout.marginLeft].every((v) => v === m.px))?.label ?? "Custom"}
                   onChange={(e) => {
                     const m = MARGINS.find((x) => x.label === e.target.value);
                     if (m) props.onLayoutChange({ marginTop: m.px, marginRight: m.px, marginBottom: m.px, marginLeft: m.px });
@@ -342,6 +473,75 @@ export function EditorRibbon(props: Props) {
                 </select>
               </label>
               <RibbonButton label="More page setup…" wide onClick={props.onOpenPageSetup}>⚙</RibbonButton>
+            </RibbonGroup>
+            <RibbonGroup label={props.sectionLayout ? "Breaks · this section" : "Breaks"}>
+              <Dropdown label="Breaks" trigger={<span>⤓ Breaks</span>} wide disabled={off}>
+                {(close) => (
+                  <>
+                    <MenuItem onSelect={() => { close(); void run((c) => c.insertPageBreak())(); }}>Page break</MenuItem>
+                    <div className="rb-menu-sep" />
+                    <MenuItem onSelect={() => { close(); void run((c) => c.insertSectionBreak({ ...layout }))(); }}>Section break (next page)</MenuItem>
+                    <MenuItem
+                      onSelect={() => {
+                        close();
+                        void run((c) => c.insertSectionBreak({ ...layout, orientation: layout.orientation === "landscape" ? "portrait" : "landscape" }))();
+                      }}
+                    >
+                      Section break → {layout.orientation === "landscape" ? "portrait" : "landscape"} pages
+                    </MenuItem>
+                  </>
+                )}
+              </Dropdown>
+            </RibbonGroup>
+            <RibbonGroup label="Page background">
+              <Dropdown label="Watermark" trigger={<span>Watermark</span>} wide disabled={off}>
+                {(close) => (
+                  <>
+                    <MenuItem checked={!props.pageSetup.watermark} onSelect={() => { close(); props.onPageSetupChange({ watermark: null }); }}>None</MenuItem>
+                    {WATERMARKS.map((w) => (
+                      <MenuItem
+                        key={w}
+                        checked={props.pageSetup.watermark?.text === w}
+                        onSelect={() => { close(); props.onPageSetupChange({ watermark: { text: w, color: "#94a3b8", opacity: 0.3 } }); }}
+                      >
+                        {w}
+                      </MenuItem>
+                    ))}
+                    <MenuItem
+                      onSelect={() => {
+                        close();
+                        const text = prompt("Watermark text:", props.pageSetup.watermark?.text ?? "");
+                        if (text?.trim()) props.onPageSetupChange({ watermark: { text: text.trim().slice(0, 60), color: "#94a3b8", opacity: 0.3 } });
+                      }}
+                    >
+                      Custom…
+                    </MenuItem>
+                  </>
+                )}
+              </Dropdown>
+              <ColorMenu
+                label="Page colour"
+                noneLabel="No colour"
+                glyph="▣"
+                initial="#fdf6e3"
+                disabled={off}
+                onPick={(color) => props.onPageSetupChange({ pageColor: color })}
+              />
+              <Dropdown label="Page borders" trigger={<span>Borders</span>} wide disabled={off}>
+                {(close) => (
+                  <>
+                    {BORDERS.map((b) => (
+                      <MenuItem
+                        key={b.label}
+                        checked={JSON.stringify(props.pageSetup.pageBorder) === JSON.stringify(b.value)}
+                        onSelect={() => { close(); props.onPageSetupChange({ pageBorder: b.value }); }}
+                      >
+                        {b.label}
+                      </MenuItem>
+                    ))}
+                  </>
+                )}
+              </Dropdown>
             </RibbonGroup>
           </>
         )}

@@ -36,6 +36,8 @@ export const VARIABLE_SPAN_SANITIZER = {
   "data-field-type": true,
   "data-has-value": true,
   "data-placeholder-text": true,
+  // Header/footer fields: <span class="tp-field" data-field="page">.
+  "data-field": true,
   style: true,
   contenteditable: true,
 };
@@ -68,6 +70,13 @@ export function sanitizeSpan(el: Element) {
   return VARIABLE_SPAN_SANITIZER;
 }
 
+/** `<sup>`: plain superscript, or a footnote reference atom. */
+export function sanitizeSup(el: Element) {
+  return el.classList.contains("tp-fn-ref")
+    ? { class: true, "data-fn-id": true, contenteditable: true, "data-mutation-free": true }
+    : {};
+}
+
 /** Allowed inline tag set for a block's saved text content. */
 export const BLOCK_INLINE_TAGS = {
   br: true,
@@ -78,7 +87,7 @@ export const BLOCK_INLINE_TAGS = {
   u: true,
   s: true,
   strike: true,
-  sup: true,
+  sup: sanitizeSup,
   sub: true,
   code: true,
   mark: MARK_SANITIZER,
