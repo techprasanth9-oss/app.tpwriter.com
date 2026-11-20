@@ -26,8 +26,9 @@ import {
   type ParagraphChild,
 } from "docx";
 import type { PageLayout } from "~/lib/api/documents";
-import type { EditorBlock, EditorOutput } from "./importer";
+import type { EditorBlock, EditorOutput } from "./types";
 import { normalizeBlock } from "../normalize";
+import type { NamedStyle, StyleSheet } from "../styles/namedStyles";
 import { isSafeLinkUrl } from "../safeUrl";
 import { cleanFormat, FORMAT_TUNE, INDENT_STEP_PX } from "../format/paragraphFormat";
 import type { HeaderFooterSet, PageBorder, PageSetup } from "../pageSetup";
@@ -39,17 +40,25 @@ import { tableToDocx } from "./export/table";
 const pxToTwip = (px: number) => Math.round(px * 15);
 
 /** Paragraph options from the block's `format` tune. */
+/** Word paragraph style ids for the editor's paragraph-level named styles
+ *  (declared in the Document's styles so Word shows them by name). */
+const PARAGRAPH_STYLE_IDS: Record<string, string> = { title: "Title", subtitle: "Subtitle", quote: "Quote" };
+
 function formatOptions(block: EditorBlock) {
   const tunes = (block as unknown as { tunes?: Record<string, unknown> }).tunes;
   const f = cleanFormat(tunes?.[FORMAT_TUNE]);
+  const style = f.styleId ? PARAGRAPH_STYLE_IDS[f.styleId] : undefined;
   return {
+    ...(style ? { style } : {}),
     alignment: tuneAlignment(f.alignment),
     ...(f.indent ? { indent: { left: pxToTwip(f.indent * INDENT_STEP_PX) } } : {}),
-    ...(f.spaceBefore !== undefined || f.spaceAfter !== undefined
+    ...(f.spaceBefore !== undefined || f.spaceAfter !== undefined || f.lineHeight !== undefined
       ? {
           spacing: {
             ...(f.spaceBefore !== undefined ? { before: pxToTwip(f.spaceBefore) } : {}),
             ...(f.spaceAfter !== undefined ? { after: pxToTwip(f.spaceAfter) } : {}),
+            // Multiple line spacing: 240 = single.
+            ...(f.lineHeight !== undefined ? { line: Math.round(f.lineHeight * 240), lineRule: "auto" as const } : {}),
           },
         }
       : {}),
@@ -67,6 +76,10 @@ const HEADING_LEVELS: Record<number, (typeof HeadingLevel)[keyof typeof HeadingL
 
 export interface ExportOptions {
   title?: string;
+  /** The document's named styles (resolved), written as Word styles so
+   *  Normal / headings / Title / Subtitle / Quote keep their look and
+   *  re-import as the same named styles. */
+  styles?: StyleSheet;
   /** Layout of the first section (later ones come from section breaks). */
   defaultLayout?: PageLayout;
   /** Headers / footers, footnotes, page colour and border. */
@@ -291,6 +304,7 @@ export async function exportDocx(
   const doc = new Document({
     creator: "TP Writer",
     title,
+    ...(opts.styles ? { styles: wordStyles(opts.styles) } : {}),
     numbering: { config: [...ctx.numbering.values()] },
     footnotes: ctx.footnotes,
     ...(setup?.differentOddEven ? { evenAndOddHeaderAndFooters: true } : {}),
@@ -687,4 +701,63 @@ function toRunOptions(style: RunStyle): IRunOptions {
   if (style.font) (opts as { font?: string }).font = style.font;
   if (style.size) (opts as { size?: number }).size = style.size;
   return opts;
+}
+
+// ── Named styles → Word styles ────────────────────────────────────────
+
+/** First concrete family of a CSS font stack (Word needs one name). */
+function wordFont(stack: string | undefined): string | undefined {
+  if (!stack) return undefined;
+  if (/var\(--tp-font-serif\)/.test(stack)) return "Lora";
+  if (/var\(--tp-font-sans\)/.test(stack)) return "Inter";
+  const first = stack.split(",")[0]?.trim().replace(/^["']|["']$/g, "");
+  return first && !/^(serif|sans-serif|monospace)$/.test(first) ? first : undefined;
+}
+
+function wordRun(s: NamedStyle) {
+  const color = s.color && /^#[0-9a-f]{6}$/i.test(s.color) ? s.color.slice(1) : undefined;
+  return {
+    ...(wordFont(s.fontFamily) ? { font: wordFont(s.fontFamily)! } : {}),
+    // px → half-points (1px = 0.75pt).
+    ...(s.fontSize ? { size: Math.round(s.fontSize * 0.75 * 2) } : {}),
+    ...(s.fontWeight && s.fontWeight >= 600 ? { bold: true } : {}),
+    ...(s.italic ? { italics: true } : {}),
+    ...(color ? { color } : {}),
+  };
+}
+
+function wordParagraph(s: NamedStyle) {
+  return {
+    spacing: {
+      ...(s.spaceBefore !== undefined ? { before: pxToTwip(s.spaceBefore) } : {}),
+      ...(s.spaceAfter !== undefined ? { after: pxToTwip(s.spaceAfter) } : {}),
+      ...(s.lineHeight ? { line: Math.round(s.lineHeight * 240), lineRule: "auto" as const } : {}),
+    },
+  };
+}
+
+function wordStyles(styles: StyleSheet) {
+  const heading = (id: "heading1" | "heading2" | "heading3" | "heading4") => ({
+    run: wordRun(styles[id]),
+    paragraph: wordParagraph(styles[id]),
+  });
+  return {
+    default: {
+      document: { run: wordRun(styles.normal), paragraph: wordParagraph(styles.normal) },
+      title: { run: wordRun(styles.title), paragraph: wordParagraph(styles.title) },
+      heading1: heading("heading1"),
+      heading2: heading("heading2"),
+      heading3: heading("heading3"),
+      heading4: heading("heading4"),
+    },
+    paragraphStyles: (["subtitle", "quote"] as const).map((id) => ({
+      id: PARAGRAPH_STYLE_IDS[id]!,
+      name: PARAGRAPH_STYLE_IDS[id]!,
+      basedOn: "Normal",
+      next: "Normal",
+      quickFormat: true,
+      run: wordRun(styles[id]),
+      paragraph: wordParagraph(styles[id]),
+    })),
+  };
 }

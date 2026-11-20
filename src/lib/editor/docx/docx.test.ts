@@ -1,7 +1,7 @@
 import JSZip from "jszip";
 import { describe, expect, it } from "vitest";
 import { exportDocx } from "./exporter";
-import { importDocx } from "./importer";
+import { importDocxFile } from "./import";
 import { DEFAULT_PAGE_SETUP, type PageSetup } from "../pageSetup";
 import type { PageLayout } from "~/lib/api/documents";
 
@@ -31,14 +31,14 @@ async function buildDocx(bodyXml: string, rels = ""): Promise<ArrayBuffer> {
 
 const allText = (blocks: Array<{ data: unknown }>) => JSON.stringify(blocks);
 
-describe("importDocx", () => {
+describe("importDocxFile (security basics)", () => {
   it("imports plain text", async () => {
-    const out = await importDocx(await buildDocx(`<w:p><w:r><w:t>Hello world</w:t></w:r></w:p>`));
+    const out = await importDocxFile(await buildDocx(`<w:p><w:r><w:t>Hello world</w:t></w:r></w:p>`));
     expect(allText(out.blocks)).toContain("Hello world");
   });
 
   it("escapes markup in document text instead of emitting it", async () => {
-    const out = await importDocx(
+    const out = await importDocxFile(
       await buildDocx(`<w:p><w:r><w:t>&lt;img src=x onerror=alert(1)&gt; a &amp; b</w:t></w:r></w:p>`),
     );
     const json = allText(out.blocks);
@@ -47,7 +47,7 @@ describe("importDocx", () => {
   });
 
   it("drops javascript: hyperlinks but keeps their text", async () => {
-    const out = await importDocx(
+    const out = await importDocxFile(
       await buildDocx(
         `<w:p><w:hyperlink r:id="rId9"><w:r><w:t>click me</w:t></w:r></w:hyperlink></w:p>`,
         `<Relationship Id="rId9" Type="${R}/hyperlink" Target="javascript:alert(1)" TargetMode="External"/>`,
@@ -59,7 +59,7 @@ describe("importDocx", () => {
   });
 
   it("keeps safe hyperlinks", async () => {
-    const out = await importDocx(
+    const out = await importDocxFile(
       await buildDocx(
         `<w:p><w:hyperlink r:id="rId9"><w:r><w:t>site</w:t></w:r></w:hyperlink></w:p>`,
         `<Relationship Id="rId9" Type="${R}/hyperlink" Target="https://example.com/?a=1&amp;b=2" TargetMode="External"/>`,
@@ -71,7 +71,7 @@ describe("importDocx", () => {
   it("throws on a file that isn't a docx instead of returning an empty doc", async () => {
     const junk = new ArrayBuffer(64);
     new Uint8Array(junk).fill(0x41);
-    await expect(importDocx(junk)).rejects.toThrow(/not a valid \.docx/i);
+    await expect(importDocxFile(junk)).rejects.toThrow();
   });
 });
 

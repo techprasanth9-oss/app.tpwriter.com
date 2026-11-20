@@ -1,0 +1,154 @@
+/* ──────────────────────────────────────────────────────────────────
+   Print layout (see printLayout.ts): one exactly page-sized container
+   per page; @page rules are generated per sheet size.
+   ────────────────────────────────────────────────────────────────── */
+
+.tp-print-root {
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.tp-print-page {
+  position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  break-after: page;
+  page-break-after: always;
+  break-inside: avoid;
+  background: #fff;
+}
+.tp-print-page:last-child {
+  break-after: auto;
+  page-break-after: auto;
+}
+
+.tp-print-page .tp-print-scope {
+  position: absolute;
+  inset: 0;
+  transform: none;
+}
+
+/* Paper: decoration only — no screen shadow / outline. */
+.tp-print-page .tp-sheet {
+  position: absolute;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* Text layer: blocks are absolutely positioned at their on-screen offsets. */
+.tp-print-page .page-canvas.tp-print-flow {
+  position: absolute;
+  inset: 0;
+  padding: 0;
+  min-height: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  z-index: 1;
+}
+.tp-print-page .tp-print-flow .codex-editor {
+  position: absolute;
+  inset: 0;
+  z-index: auto;
+}
+.tp-print-page .tp-print-flow .codex-editor__redactor {
+  position: static;
+  margin: 0 !important;
+}
+
+.tp-print-page .tp-print-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+.tp-print-page .tp-hf,
+.tp-print-page .tp-hf:hover {
+  border-color: transparent;
+  background: transparent;
+  cursor: default;
+}
+.tp-print-page .tp-field { background: none; padding: 0; }
+
+/* On-screen-only markers and editing affordances. */
+.tp-print-page .tp-page-break,
+.tp-print-page .tp-section-break {
+  visibility: hidden;
+}
+.tp-print-page .tp-split { pointer-events: none; }
+.tp-print-page [contenteditable] { caret-color: transparent; }
+
+/* Browser print from the editor: the print root sits hidden in <body> and
+   is the only thing printed. */
+@media screen {
+  .tp-print-root--offscreen { display: none; }
+}
+
+/* The print route shows the pages stacked on screen. */
+@media screen {
+  .tp-print-route {
+    min-height: 100vh;
+    background: #e9e7e2;
+    padding: 24px 0;
+  }
+  .tp-print-route .tp-print-page {
+    margin: 0 auto 24px;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  }
+}
+
+@media print {
+  html,
+  body {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: none !important;
+  }
+  html.tp-printing body > *:not(.tp-print-root) {
+    display: none !important;
+  }
+  html.tp-printing .tp-print-root--offscreen {
+    display: block !important;
+  }
+  .tp-print-route {
+    padding: 0 !important;
+    background: none !important;
+  }
+  .tp-print-route .tp-print-page {
+    margin: 0 !important;
+    box-shadow: none !important;
+  }
+}
+
+/* "Print / PDF" menu in the document header. */
+.doc-print-menu { position: relative; display: inline-block; }
+.doc-print-menu__list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 50;
+  min-width: 160px;
+  padding: 4px;
+  background: var(--tp-paper, #fff);
+  border: 1px solid var(--tp-rule, #ddd);
+  border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  display: flex;
+  flex-direction: column;
+}
+.doc-print-menu__item {
+  text-align: left;
+  padding: 6px 10px;
+  border: 0;
+  background: none;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--tp-ink, #222);
+  cursor: pointer;
+}
+.doc-print-menu__item:hover:not(:disabled) { background: var(--tp-accent-faint, #f4efe9); }
+.doc-print-menu__item:disabled { opacity: 0.5; cursor: default; }

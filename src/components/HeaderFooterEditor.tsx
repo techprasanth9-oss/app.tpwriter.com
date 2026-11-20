@@ -1,7 +1,7 @@
 import EditorJS from "@editorjs/editorjs";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import type { EditorBlock } from "~/lib/api/documents";
-import { configureBaseTools } from "~/lib/editor";
+import { configureBaseTools } from "~/lib/editor/tools";
 import { normalizeBlocks } from "~/lib/editor/normalize";
 import { fieldHtml, type FieldKind } from "~/lib/editor/pageSetup";
 import { sanitizeEditorData } from "~/lib/editor/sanitizeData";

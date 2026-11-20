@@ -30,6 +30,8 @@ export const PageSheet = memo(function PageSheet({
     <div
       ref={sheetRef}
       className="tp-sheet"
+      data-margin-top={page.marginTop}
+      data-margin-bottom={page.marginBottom + page.footnoteHeight}
       style={{
         top: page.top,
         left: page.left,

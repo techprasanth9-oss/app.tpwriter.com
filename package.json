@@ -13,7 +13,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:fidelity": "vitest run --config vitest.fidelity.config.ts",
+    "fixtures:build": "python3 scripts/fixtures/build_docx_fixtures.py && bash scripts/fixtures/render_reference.sh"
   },
   "dependencies": {
     "@editorjs/editorjs": "^2.30.7",

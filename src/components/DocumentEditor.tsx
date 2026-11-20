@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import type EditorJS from "@editorjs/editorjs";
-import { exportDocx, MAX_DOCX_BYTES, parseDocx } from "~/lib/editor";
+import { DEFAULT_IMPORT_LIMITS } from "~/lib/editor/docx/import/types";
+import { uploadEmbeddedImages } from "~/lib/editor/docx/uploadEmbedded";
 import type { EditorBlock, FullDocument, PageLayout } from "~/lib/api/documents";
 import { updateDocument } from "~/lib/api/documents";
 import { uploadImage as uploadImageToApi } from "~/lib/api/uploads";
@@ -31,6 +32,7 @@ import type { StyleSheet } from "~/lib/editor/styles/namedStyles";
 import { EditorRibbon } from "./EditorRibbon";
 import { LayoutDialog } from "./LayoutDialog";
 import { ThumbnailsSidebar } from "./ThumbnailsSidebar";
+import { usePrintActions } from "~/lib/editor/print/usePrintActions";
 
 async function uploadImage(file: File): Promise<{ url: string }> {
   const { url } = await uploadImageToApi(file);
@@ -112,6 +114,8 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
   const [activePage, setActivePage] = useState(0);
   const [commands, setCommands] = useState<EditorCommands | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
+  /** What a DOCX import couldn't bring over faithfully. */
+  const [importWarnings, setImportWarnings] = useState<string[]>([]);
   const [styleOverrides, setStyleOverrides] = useState<Record<string, unknown>>(doc.styles ?? {});
   const [pageSetup, setPageSetup] = useState<PageSetup>(() =>
     cleanPageSetup(doc.pageSetup, doc.headerBlocks, doc.footerBlocks),
@@ -134,6 +138,8 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
   const surfaceRef = useRef<DocumentSurfaceHandle>(null);
   const hfEditorRef = useRef<HeaderFooterEditorHandle>(null);
   const pageSetupTimerRef = useRef<number | null>(null);
+  const pendingPageSetupRef = useRef<PageSetup | null>(null);
+  const flushPageSetupRef = useRef<() => Promise<void>>(async () => undefined);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const docRootRef = useRef<HTMLElement | null>(null);
@@ -150,6 +156,19 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
     // after an edit rewrites exactly those — migrating them for good.
     initialBlocks: doc.blocks as DiffBlock[],
     getBlocks: async () => (editorRef.current ? readBlocks(editorRef.current) : null),
+  });
+
+  const printActions = usePrintActions({
+    documentId,
+    title,
+    getDocumentEl: useCallback(() => docRootRef.current, []),
+    pages,
+    // The server renders what's stored: flush pending content and page
+    // setup (headers/footers, footnotes) edits first.
+    beforeServerPdf: async () => {
+      await autosave.saveNow();
+      await flushPageSetupRef.current();
+    },
   });
 
   // ── Editor lifecycle ─────────────────────────────────────────────────
@@ -279,22 +298,39 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
   // ── Page setup: headers / footers, footnotes, decoration ────────────
 
   /** Update page setup locally now and save it after a short pause. */
+  const savePageSetup = useCallback(
+    (next: PageSetup) =>
+      updateDocument(documentId, { pageSetup: next as unknown as Record<string, unknown> }).catch((err) =>
+        console.error("[pageSetup] save failed:", err),
+      ),
+    [documentId],
+  );
+
   const updatePageSetup = useCallback(
     (fn: (prev: PageSetup) => PageSetup) => {
       setPageSetup((prev) => {
         const next = fn(prev);
+        pendingPageSetupRef.current = next;
         if (pageSetupTimerRef.current !== null) window.clearTimeout(pageSetupTimerRef.current);
         pageSetupTimerRef.current = window.setTimeout(() => {
           pageSetupTimerRef.current = null;
-          updateDocument(documentId, { pageSetup: next as unknown as Record<string, unknown> }).catch((err) =>
-            console.error("[pageSetup] save failed:", err),
-          );
+          pendingPageSetupRef.current = null;
+          void savePageSetup(next);
         }, 600);
         return next;
       });
     },
-    [documentId],
+    [savePageSetup],
   );
+
+  /** Save a debounced page-setup change right now (before server PDF). */
+  flushPageSetupRef.current = async () => {
+    const pending = pendingPageSetupRef.current;
+    if (pageSetupTimerRef.current !== null) window.clearTimeout(pageSetupTimerRef.current);
+    pageSetupTimerRef.current = null;
+    pendingPageSetupRef.current = null;
+    if (pending) await savePageSetup(pending);
+  };
 
   const handleHeaderFooterChange = useCallback(
     (area: HeaderFooterArea, kind: HeaderFooterKind, blocks: EditorBlock[]) => {
@@ -471,8 +507,8 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
       const editor = editorRef.current;
       if (!file || !editor) return;
 
-      if (file.size > MAX_DOCX_BYTES) {
-        alert(`That file is too large to import (max ${Math.round(MAX_DOCX_BYTES / 1024 / 1024)} MB).`);
+      if (file.size > DEFAULT_IMPORT_LIMITS.maxBytes) {
+        alert(`That file is too large to import (max ${Math.round(DEFAULT_IMPORT_LIMITS.maxBytes / 1024 / 1024)} MB).`);
         return;
       }
 
@@ -480,51 +516,45 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
       try {
         // Parse fully before touching anything — the importer throws on a
         // bad file and nothing is replaced unless there's content.
-        const parsed = await parseDocx(file);
-        // Keep the source's page breaks; where the page setup changes, the
-        // break becomes a section break carrying the new layout.
-        const nextLayout: PageLayout = parsed.defaultLayout
-          ? { ...layout, ...parsed.defaultLayout }
-          : layout;
-        let effective = JSON.stringify({ ...nextLayout, ...(parsed.pages[0]?.layout ?? {}) });
-        const blocks = parsed.pages.flatMap((page, i) => {
-          if (i === 0) return page.blocks;
-          const pageLayout = JSON.stringify({ ...nextLayout, ...(page.layout ?? {}) });
-          const brk =
-            pageLayout !== effective
-              ? { type: "sectionBreak", data: { layout: { ...nextLayout, ...(page.layout ?? {}) } } }
-              : { type: "pageBreak", data: {} };
-          effective = pageLayout;
-          return [brk, ...page.blocks];
-        }) as EditorBlock[];
-        if (!blocks.some((b) => b.type !== "pageBreak")) {
+        // Loaded on demand: the importer and JSZip aren't needed until now.
+        const { importDocxFile } = await import("~/lib/editor/docx/import");
+        const imported = await importDocxFile(file);
+        if (!imported.blocks.some((b) => b.type !== "pageBreak" && b.type !== "sectionBreak")) {
           throw new Error("The file doesn't contain any content we can import.");
         }
         if (!confirm(`Replace the contents of "${title}" with "${file.name}"?`)) return;
 
+        // Embedded images become normal uploads (the document stays small).
+        const { value: content, failed } = await uploadEmbeddedImages(
+          { blocks: imported.blocks, pageSetup: imported.pageSetup },
+          uploadImage,
+        );
+        const warnings = [...imported.warnings];
+        if (failed > 0) warnings.push(`${failed} image(s) couldn't be uploaded and are embedded in the document.`);
+
         await historyRef.current?.record();
         await editor.render({
           time: Date.now(),
-          blocks: sanitizeEditorData(normalizeBlocks(blocks)),
+          blocks: sanitizeEditorData(normalizeBlocks(content.blocks)),
         });
         autosave.markDirty();
         await historyRef.current?.reset();
 
-        // Headers / footers and page setup are document metadata.
-        const nextSetup: PageSetup = {
-          ...pageSetup,
-          headers: { ...pageSetup.headers, default: parsed.headerBlocks as EditorBlock[] },
-          footers: { ...pageSetup.footers, default: parsed.footerBlocks as EditorBlock[] },
-        };
+        // Page setup, headers / footers, footnotes and named styles are
+        // document metadata.
+        const nextStyles = { ...styleOverrides, ...imported.styles } as Record<string, unknown>;
         const meta = await updateDocument(documentId, {
-          defaultLayout: nextLayout,
-          pageSetup: nextSetup as unknown as Record<string, unknown>,
+          defaultLayout: imported.defaultLayout,
+          pageSetup: content.pageSetup as unknown as Record<string, unknown>,
+          styles: nextStyles,
         });
         setLayout(meta.defaultLayout);
         setPageSetup(cleanPageSetup(meta.pageSetup));
+        setStyleOverrides(meta.styles);
 
-        const niceTitle = file.name.replace(/\.docx$/i, "");
+        const niceTitle = imported.title?.trim() || file.name.replace(/\.docx$/i, "");
         if (niceTitle) setTitle(niceTitle);
+        setImportWarnings(warnings);
       } catch (err) {
         console.error("[importDocx] failed:", err);
         alert(`Couldn't import that DOCX.\n\n${err instanceof Error ? err.message : String(err)}`);
@@ -532,7 +562,7 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
         setBusy(false);
       }
     },
-    [autosave, documentId, layout, pageSetup, title],
+    [autosave, documentId, styleOverrides, title],
   );
 
   const handleExportClick = useCallback(async () => {
@@ -541,9 +571,10 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
     setBusy(true);
     try {
       const out = await editor.save();
+      const { exportDocx } = await import("~/lib/editor/docx/exporter");
       const blob = await exportDocx(
         { time: Date.now(), blocks: out.blocks as never, version: out.version },
-        { title, defaultLayout: layout, pageSetup },
+        { title, defaultLayout: layout, pageSetup, styles },
       );
       triggerDownload(blob, `${sanitizeFilename(title)}.docx`);
     } catch (err) {
@@ -552,7 +583,7 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
     } finally {
       setBusy(false);
     }
-  }, [layout, pageSetup, title]);
+  }, [layout, pageSetup, styles, title]);
 
   // ── Layout ───────────────────────────────────────────────────────────
 
@@ -615,6 +646,10 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
         autosaveStatus={autosave.status}
         lastSavedAt={autosave.lastSavedAt}
         busy={busy}
+        onPrintClick={() => void printActions.print()}
+        onDownloadPdfClick={() => void printActions.downloadPdf()}
+        pdfAvailable={printActions.pdfAvailable}
+        pdfBusy={printActions.busy}
       />
 
       {autosave.status === "conflict" && (
@@ -628,6 +663,25 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
           </button>
           <button type="button" className="doc-btn" onClick={() => void handleKeepMine()}>
             Keep my version
+          </button>
+        </div>
+      )}
+
+      {importWarnings.length > 0 && (
+        <div className="doc-conflict tp-import-warnings" role="status">
+          <details>
+            <summary>
+              Imported with {importWarnings.length} note{importWarnings.length === 1 ? "" : "s"} about things
+              that couldn't be brought over exactly.
+            </summary>
+            <ul>
+              {importWarnings.map((w) => (
+                <li key={w}>{w}</li>
+              ))}
+            </ul>
+          </details>
+          <button type="button" className="doc-btn" onClick={() => setImportWarnings([])}>
+            Dismiss
           </button>
         </div>
       )}

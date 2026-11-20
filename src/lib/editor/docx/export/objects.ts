@@ -1,7 +1,7 @@
 /**
  * DOCX export for the object blocks: equation, text box, chart.
  *
- *  - equation → an OMML `<m:oMath>` holding the LaTeX as one math run.
+ *  - equation → OMML `<m:oMath>` built from the LaTeX (see latexMath.ts).
  *    Word shows it in linear format (the LaTeX source inside an equation
  *    object); the user can convert it with Equation → Professional.
  *  - textBox → a one-cell table with the preset's shading / border, width
@@ -10,12 +10,12 @@
  *    canvas, prepared up front by `prepareObjectImages`), or — without a
  *    canvas (jsdom, failure) — a plain data table. The title is a caption.
  */
+import { latexToMath } from "./latexMath";
 import {
   AlignmentType,
   BorderStyle,
   ImageRun,
   Math as DocxMath,
-  MathRun,
   Paragraph,
   ShadingType,
   Table,
@@ -50,7 +50,9 @@ export function equationToDocx(raw: unknown): Paragraph | null {
   const latex = latexForWord(data.latex).trim();
   if (!latex) return null;
   return new Paragraph({
-    children: [new DocxMath({ children: [new MathRun(latex)] })],
+    // Real Office Math (fractions, roots, sums…) for the common LaTeX
+    // subset; anything else stays as literal math text.
+    children: [new DocxMath({ children: latexToMath(latex) })],
     ...(data.display ? { alignment: AlignmentType.CENTER } : {}),
     spacing: { before: 120, after: 120 },
   });

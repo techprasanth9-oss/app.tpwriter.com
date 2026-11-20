@@ -8,6 +8,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { ApiError } from "./lib/api/client";
 import * as authApi from "./lib/api/auth";
 import { DocumentEditor } from "./components/DocumentEditor";
+import { PrintView } from "./components/PrintView";
 import { DocumentListPage } from "./pages/DocumentListPage";
 import { LoginPage } from "./pages/LoginPage";
 import { ProfilePage } from "./pages/ProfilePage";
@@ -74,6 +75,17 @@ const documentDetailRoute = createRoute({
   component: DocumentDetailPage,
 });
 
+/** Read-only print layout; the server's PDF renderer loads this. */
+const documentPrintRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/documents/$documentId/print",
+  beforeLoad: async ({ context }) => {
+    const user = await fetchMeSafely(context);
+    if (!user) throw redirect({ to: "/login" });
+  },
+  component: DocumentPrintPage,
+});
+
 const profileRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/profile",
@@ -89,9 +101,15 @@ function DocumentDetailPage() {
   return <DocumentEditor documentId={documentId} />;
 }
 
+function DocumentPrintPage() {
+  const { documentId } = documentPrintRoute.useParams();
+  return <PrintView documentId={documentId} />;
+}
+
 export const routeTree = rootRoute.addChildren([
   loginRoute,
   documentListRoute,
   documentDetailRoute,
+  documentPrintRoute,
   profileRoute,
 ]);

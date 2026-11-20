@@ -90,6 +90,8 @@ export function usePagination(surfaceRef: RefObject<HTMLElement | null>, options
   const pushStyleRef = useRef<HTMLStyleElement | null>(null);
   const layoutStyleRef = useRef<HTMLStyleElement | null>(null);
   const shiftedRowsRef = useRef<Set<HTMLTableRowElement>>(new Set());
+  /** Per-block height corrections from the verify step (block id → px). */
+  const correctionsRef = useRef<Map<string, number>>(new Map());
 
   const run = useCallback(() => {
     frameRef.current = null;
@@ -152,17 +154,41 @@ export function usePagination(surfaceRef: RefObject<HTMLElement | null>, options
     const layoutCss = layoutRules.join("\n");
     if (layoutStyle.textContent !== layoutCss) layoutStyle.textContent = layoutCss;
 
+    // Measure → paginate → apply → verify. The verify step catches the
+    // browser laying a split paragraph out differently from the plan (e.g.
+    // an extra line moving to the next page because of sub-pixel snapping
+    // or a taller line box) and feeds the difference back in, so the
+    // arithmetic for everything below stays true. At most two passes.
+    const corrections = correctionsRef.current;
+    let result!: ReturnType<typeof paginate>;
+    let reserves = new Map<number, number>();
+    let tableInfo = new Map<HTMLElement, TableInfo>();
+    let scale = 1;
+    for (let pass = 0; pass < 2; pass++) {
     // ── Measure (paginator effects switched off) ─────────────────────────
     surface.classList.add(MEASURING_CLASS);
     pushStyle.media = "not all";
-    const scale = surface.offsetWidth ? surface.getBoundingClientRect().width / surface.offsetWidth : 1;
+    scale = surface.offsetWidth ? surface.getBoundingClientRect().width / surface.offsetWidth : 1;
     const breaksCache = new Map<number, number[]>();
-    const tableInfo = new Map<HTMLElement, TableInfo>();
+    tableInfo = new Map<HTMLElement, TableInfo>();
+    // Natural positions: a block's height for layout is the distance to the
+    // next in-flow block, not its own box height — that includes any space
+    // the browser opened above the next block (e.g. a table too wide to sit
+    // beside a floated image drops below it).
+    const rects = blocks.map((el) => el.getBoundingClientRect());
+    const floated = blocks.map((el) => getComputedStyle(el).float !== "none");
+    const strides = rects.map((rect, i) => {
+      if (floated[i]) return rect.height;
+      let j = i + 1;
+      while (j < blocks.length && floated[j]) j++;
+      const next = rects[j];
+      return next ? Math.max(rect.height, next.top - rect.top) : rect.height;
+    });
     const metrics: BlockMetrics[] = blocks.map((el, i) => {
       const kind = kinds[i]!;
-      const rect = el.getBoundingClientRect();
+      const rect = rects[i]!;
       // Floated images (text wrap) sit beside the following blocks.
-      if (getComputedStyle(el).float !== "none") {
+      if (floated[i]) {
         return { height: 0, floatHeight: rect.height / (scale || 1), sectionStart: sectionStart[i] };
       }
       if (kind === "rows") {
@@ -176,7 +202,7 @@ export function usePagination(surfaceRef: RefObject<HTMLElement | null>, options
       return {
         // Fractional heights: integer offsetHeight drifts by up to 0.5px
         // per block, which adds up to lines overflowing the bottom margin.
-        height: rect.height / (scale || 1),
+        height: strides[i]! / (scale || 1) + (el.dataset.id ? (corrections.get(el.dataset.id) ?? 0) : 0),
         breakBefore: i > 0 && isPageBreak(blocks[i - 1]!),
         sectionStart: sectionStart[i],
         keepTogether: kind === "lines" ? 2 : 1,
@@ -197,8 +223,8 @@ export function usePagination(surfaceRef: RefObject<HTMLElement | null>, options
     const trailingBreak = !!lastBlock && (isPageBreak(lastBlock) || !!lastLayout);
 
     // Footnote space ↔ pagination: iterate until each page's notes settle.
-    let reserves = new Map<number, number>();
-    let result = paginate(metrics, {
+    reserves = new Map<number, number>();
+    result = paginate(metrics, {
       sections,
       gap,
       trailingBreak,
@@ -252,6 +278,28 @@ export function usePagination(surfaceRef: RefObject<HTMLElement | null>, options
     shiftedRowsRef.current = shifted;
     const css = rules.join("\n");
     if (pushStyle.textContent !== css) pushStyle.textContent = css;
+
+    // ── Verify split paragraphs came out as planned ──────────────────────
+    let changed = false;
+    blocks.forEach((el, i) => {
+      const id = el.dataset.id;
+      if (!id || kinds[i] !== "lines") return;
+      const splits = result.splits[i] ?? [];
+      let next = 0;
+      if (splits.length > 0) {
+        const planned = rects[i]!.height / (scale || 1) + splits.reduce((sum, s) => sum + s.gap, 0);
+        const live = el.getBoundingClientRect().height / (scale || 1);
+        if (live - planned > 1) next = live - planned;
+      }
+      const prev = corrections.get(id) ?? 0;
+      if (Math.abs(next - prev) > 0.5) {
+        if (next > 0) corrections.set(id, next);
+        else corrections.delete(id);
+        changed = true;
+      }
+    });
+    if (!changed) break;
+    }
 
     // Footnote numbers follow document order.
     const order: string[] = [];
@@ -399,33 +447,54 @@ function measureBreaks(block: HTMLElement, kind: SplitKind, scale: number): numb
   const toLocal = (y: number) => (y - blockTop) / scale;
 
   const content = block.querySelector(".ce-block__content") ?? block;
-  const rects: Array<{ top: number; bottom: number }> = [];
+  const frags: Array<{ top: number; bottom: number; boxBottom: number }> = [];
   const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
   const range = document.createRange();
+  const leading = new Map<Element, number>();
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     if (!node.textContent?.trim()) continue;
+    const parent = node.parentElement!;
+    let lineHeight = leading.get(parent);
+    if (lineHeight === undefined) {
+      const cs = getComputedStyle(parent);
+      lineHeight = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.2 || 0;
+      leading.set(parent, lineHeight);
+    }
     range.selectNodeContents(node);
     for (const r of Array.from(range.getClientRects())) {
-      if (r.height > 0) rects.push({ top: r.top, bottom: r.bottom });
+      if (r.height <= 0) continue;
+      // The line box extends half the leading below the glyphs.
+      const halfLeading = Math.max(0, (lineHeight * scale - r.height) / 2);
+      frags.push({ top: r.top, bottom: r.bottom, boxBottom: r.bottom + halfLeading });
     }
   }
-  rects.sort((a, b) => a.top - b.top);
+  frags.sort((a, b) => a.top - b.top);
 
   // Merge fragments on the same visual line.
-  const lines: Array<{ top: number; bottom: number }> = [];
-  for (const r of rects) {
+  const lines: Array<{ top: number; bottom: number; boxBottom: number }> = [];
+  for (const f of frags) {
     const line = lines[lines.length - 1];
-    if (line && r.top < line.bottom - 1) {
-      line.top = Math.min(line.top, r.top);
-      line.bottom = Math.max(line.bottom, r.bottom);
+    if (line && f.top < line.bottom - 1) {
+      line.top = Math.min(line.top, f.top);
+      line.bottom = Math.max(line.bottom, f.bottom);
+      line.boxBottom = Math.max(line.boxBottom, f.boxBottom);
     } else {
-      lines.push({ ...r });
+      lines.push({ ...f });
     }
   }
 
+  // Break at the bottom of each line's box — the exact boundary with the
+  // next line. (A midpoint between glyphs is off when a line mixes sizes or
+  // the leading isn't symmetric, and a float 1px inside a line's box pushes
+  // that whole line to the next page, throwing the page's arithmetic off.)
+  // Half a pixel past the boundary: layout snaps positions to sub-pixel
+  // units, and a float starting exactly at a line box's bottom can still
+  // overlap it by a hair. Past the boundary it's clear of line i but still
+  // inside line i + 1 (which is what must move).
   const breaks: number[] = [];
   for (let i = 1; i < lines.length; i++) {
-    breaks.push(toLocal((lines[i - 1]!.bottom + lines[i]!.top) / 2));
+    const boundary = Math.min(lines[i - 1]!.boxBottom + 0.5 * scale, lines[i]!.top);
+    breaks.push(toLocal(boundary));
   }
   return breaks;
 }

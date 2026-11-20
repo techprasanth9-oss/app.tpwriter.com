@@ -1,10 +1,4 @@
 export { configureBaseTools } from "./tools";
 export type { EditorToolConfig, BaseToolsOptions } from "./tools";
-export { importDocx, parseDocx, exportDocx, MAX_DOCX_BYTES } from "./docx";
-export type {
-  EditorBlock,
-  EditorOutput,
-  ExportOptions,
-  ParsedDocx,
-  ParsedDocxPage,
-} from "./docx";
+export { exportDocx, importDocxFile, DocxImportError, DEFAULT_IMPORT_LIMITS } from "./docx";
+export type { EditorBlock, EditorOutput, ExportOptions, ImportedDocument } from "./docx";

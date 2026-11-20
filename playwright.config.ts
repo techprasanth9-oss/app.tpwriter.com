@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import fs from "node:fs";
 import path from "node:path";
 
 /**
@@ -14,6 +15,12 @@ const apiDir = process.env.TP_API_DIR;
 // Dedicated ports so the suite doesn't collide with dev servers on 3000/3001.
 const APP_PORT = Number(process.env.E2E_APP_PORT ?? 3100);
 const API_PORT = Number(process.env.E2E_API_PORT ?? 3101);
+// Browser the API's PDF renderer launches (playwright-core). CI installs
+// Playwright's Chromium, which playwright-core finds by itself; locally
+// default to the installed Chrome, like the tests do.
+const MAC_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const chromiumPath =
+  process.env.CHROMIUM_PATH ?? (!process.env.CI && fs.existsSync(MAC_CHROME) ? MAC_CHROME : undefined);
 if (!apiDir) {
   throw new Error("Set TP_API_DIR to the tp-writer-api checkout to run e2e tests.");
 }
@@ -49,7 +56,13 @@ export default defineConfig({
     {
       command: "pnpm dev:memory",
       cwd: path.resolve(apiDir),
-      env: { PORT: String(API_PORT), CORS_ORIGINS: `http://localhost:${APP_PORT}` },
+      env: {
+        PORT: String(API_PORT),
+        CORS_ORIGINS: `http://localhost:${APP_PORT}`,
+        // Server-side PDF export renders the app's print route.
+        APP_URL: `http://localhost:${APP_PORT}`,
+        ...(chromiumPath ? { CHROMIUM_PATH: chromiumPath } : {}),
+      },
       url: `http://localhost:${API_PORT}/health`,
       reuseExistingServer: false,
       timeout: 120_000,

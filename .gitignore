@@ -19,3 +19,7 @@ data/
 test-results
 playwright-report
 e2e/.auth
+
+# DOCX fidelity corpus: LibreOffice renders + per-run report
+fixtures/docx/.render/
+fixtures/docx/fidelity-report.md

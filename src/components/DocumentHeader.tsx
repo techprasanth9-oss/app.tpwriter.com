@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import type { AutosaveStatus } from "~/hooks/useAutosave";
 import type { PageLayout } from "~/lib/api/documents";
 
@@ -16,6 +17,13 @@ interface Props {
   autosaveStatus?: AutosaveStatus;
   lastSavedAt?: Date | null;
   busy?: boolean;
+  /** Browser print ("Print…"). */
+  onPrintClick?: () => void;
+  /** Server-rendered PDF ("Download PDF"). */
+  onDownloadPdfClick?: () => void;
+  /** false when the API can't render PDFs (501) — the item is disabled. */
+  pdfAvailable?: boolean | null;
+  pdfBusy?: boolean;
 }
 
 const ZOOM_STOPS = [0.5, 0.75, 1, 1.25, 1.5, 2];
@@ -35,6 +43,10 @@ export function DocumentHeader({
   autosaveStatus,
   lastSavedAt,
   busy = false,
+  onPrintClick,
+  onDownloadPdfClick,
+  pdfAvailable,
+  pdfBusy = false,
 }: Props) {
   return (
     <header className="doc-header">
@@ -82,6 +94,14 @@ export function DocumentHeader({
         <button type="button" className="doc-btn" onClick={onExportClick} disabled={busy}>
           Export DOCX
         </button>
+        {onPrintClick && (
+          <PrintMenu
+            onPrint={onPrintClick}
+            onDownloadPdf={onDownloadPdfClick}
+            pdfAvailable={pdfAvailable}
+            pdfBusy={pdfBusy}
+          />
+        )}
         {onLayoutClick && (
           <button
             type="button"
@@ -118,6 +138,78 @@ export function DocumentHeader({
         </div>
       </div>
     </header>
+  );
+}
+
+/** "Print / PDF" dropdown: browser print, or a server-rendered PDF. */
+function PrintMenu({
+  onPrint,
+  onDownloadPdf,
+  pdfAvailable,
+  pdfBusy,
+}: {
+  onPrint: () => void;
+  onDownloadPdf?: () => void;
+  pdfAvailable?: boolean | null;
+  pdfBusy: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent | KeyboardEvent) => {
+      if (e instanceof KeyboardEvent ? e.key === "Escape" : !ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [open]);
+  const pdfDisabled = pdfBusy || pdfAvailable === false;
+  return (
+    <div className="doc-print-menu" ref={ref}>
+      <button
+        type="button"
+        className="doc-btn"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        title="Print or save as PDF"
+      >
+        {pdfBusy ? "Creating PDF…" : "Print / PDF"}
+      </button>
+      {open && (
+        <div className="doc-print-menu__list" role="menu">
+          <button
+            type="button"
+            role="menuitem"
+            className="doc-print-menu__item"
+            onClick={() => {
+              setOpen(false);
+              onPrint();
+            }}
+          >
+            Print…
+          </button>
+          {onDownloadPdf && pdfAvailable !== false && (
+            <button
+              type="button"
+              role="menuitem"
+              className="doc-print-menu__item"
+              disabled={pdfDisabled}
+              onClick={() => {
+                setOpen(false);
+                onDownloadPdf();
+              }}
+            >
+              Download PDF
+            </button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

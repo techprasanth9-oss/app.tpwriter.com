@@ -95,9 +95,13 @@ export async function textOutsidePages(page: Page) {
     const flow = document.querySelector<HTMLElement>(".tp-flow")!;
     const origin = doc.getBoundingClientRect().top;
     const margin = parseFloat(flow.style.paddingTop); // symmetric default margins
-    const sheets = [...document.querySelectorAll(".tp-sheet")].map((s) => {
+    const sheets = [...document.querySelectorAll<HTMLElement>(".tp-sheet")].map((s) => {
       const r = s.getBoundingClientRect();
-      return { top: r.top - origin + margin - 1, bottom: r.bottom - origin - margin + 1 };
+      // Each page's own margins (sections can differ); footnote space
+      // counts as the bottom margin's.
+      const mt = Number(s.dataset.marginTop ?? margin);
+      const mb = Number(s.dataset.marginBottom ?? margin);
+      return { top: r.top - origin + mt - 1, bottom: r.bottom - origin - mb + 1 };
     });
     const redactor = document.querySelector(".codex-editor__redactor")!;
     const walker = document.createTreeWalker(redactor, NodeFilter.SHOW_TEXT);

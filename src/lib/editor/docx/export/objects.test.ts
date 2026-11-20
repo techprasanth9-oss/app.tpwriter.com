@@ -11,15 +11,17 @@ async function documentXml(blocks: Array<{ type: string; data: Record<string, un
 }
 
 describe("object blocks → DOCX", () => {
-  it("exports an equation as Office Math with the LaTeX in a math run, centred when display", async () => {
+  it("exports an equation as structured Office Math, centred when display", async () => {
     const { xml } = await documentXml([
       { type: "equation", data: { latex: "a^2 \\lt b", display: true } },
       { type: "equation", data: { latex: "x", display: false } },
       { type: "equation", data: { latex: "  " } },
     ]);
     expect(xml.match(/<m:oMath>/g)).toHaveLength(2);
-    // `\\lt ` (how "<" is stored) maps back to the symbol.
-    expect(xml).toContain("<m:t>a^2 &lt;b</m:t>");
+    // `a^2` becomes a real superscript; `\\lt ` (how "<" is stored) maps
+    // back to the symbol.
+    expect(xml).toContain("<m:sSup>");
+    expect(xml).toContain("&lt;b");
     // The display equation's paragraph is centred, the inline one isn't.
     const paras = xml.split("<w:p>").filter((p) => p.includes("<m:oMath>"));
     expect(paras[0]).toContain('<w:jc w:val="center"/>');

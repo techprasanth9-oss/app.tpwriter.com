@@ -103,7 +103,9 @@ test("DOCX export carries equation, text box and chart image", async ({ page, re
   const zip = await JSZip.loadAsync(fs.readFileSync(file!));
   const xml = await zip.file("word/document.xml")!.async("string");
   expect(xml).toContain("<m:oMath>");
-  expect(xml).toContain("a^2+b^2=c^2");
+  // Exported as structured Office Math: a² is a real superscript, not "a^2".
+  expect(xml).toContain("<m:sSup>");
+  expect(xml).not.toContain("a^2");
   expect(xml).toContain('w:fill="DDF4FF"');
   expect(xml).toContain("Boxed ");
   // A real browser rasterises the chart to a PNG.

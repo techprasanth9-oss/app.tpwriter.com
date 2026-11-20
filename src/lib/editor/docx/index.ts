@@ -1,9 +1,5 @@
-export { importDocx, parseDocx, MAX_DOCX_BYTES } from "./importer";
-export type {
-  EditorBlock,
-  EditorOutput,
-  ParsedDocx,
-  ParsedDocxPage,
-} from "./importer";
+export type { EditorBlock, EditorOutput } from "./types";
 export { exportDocx } from "./exporter";
 export type { ExportOptions } from "./exporter";
+export { importDocxFile, DocxImportError, DEFAULT_IMPORT_LIMITS } from "./import";
+export type { ImportedDocument, ImportLimits } from "./import";

@@ -10,7 +10,7 @@ import {
   type Ref,
 } from "react";
 import type { EditorBlock, PageLayout } from "~/lib/api/documents";
-import { configureBaseTools } from "~/lib/editor";
+import { configureBaseTools } from "~/lib/editor/tools";
 import { normalizeBlocks } from "~/lib/editor/normalize";
 import type { HeaderFooterKind, PageSetup } from "~/lib/editor/pageSetup";
 import { PAGE_GAP } from "~/lib/editor/pagination/paper";
@@ -46,6 +46,9 @@ interface Props {
   onChange: () => void;
   onImageUpload: (file: File) => Promise<{ url: string }>;
   onPagesChange: (pages: PageView[]) => void;
+  /** Render without editing (print view): EditorJS readOnly, no caret
+   *  placement, no placeholder. Read once on mount. */
+  readOnly?: boolean;
 }
 
 export interface DocumentSurfaceHandle {
@@ -129,12 +132,14 @@ export const DocumentSurface = forwardRef<DocumentSurfaceHandle, Props>(function
     holder.appendChild(mount);
 
     const blocks = sanitizeEditorData(normalizeBlocks(initialBlocksRef.current));
+    const readOnly = propsRef.current.readOnly === true;
     const editor = new EditorJS({
       holder: mount,
+      readOnly,
       // No bottom padding: the paginator owns vertical space.
       minHeight: 0,
-      placeholder: blocks.length === 0 ? PLACEHOLDER : undefined,
-      autofocus: blocks.length === 0,
+      placeholder: blocks.length === 0 && !readOnly ? PLACEHOLDER : undefined,
+      autofocus: blocks.length === 0 && !readOnly,
       tools: configureBaseTools({
         imageUploader: (file: File) => propsRef.current.onImageUpload(file),
       }) as never,
@@ -180,7 +185,7 @@ export const DocumentSurface = forwardRef<DocumentSurfaceHandle, Props>(function
   // Clicks in the empty area below the last block focus the end of the
   // document, like clicking below the text in a word processor.
   const onFlowMouseDown = (e: MouseEvent<HTMLDivElement>) => {
-    if (e.target !== flowRef.current) return;
+    if (e.target !== flowRef.current || props.readOnly) return;
     const editor = editorRef.current;
     if (!editor) return;
     e.preventDefault();
