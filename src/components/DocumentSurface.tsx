@@ -235,6 +235,7 @@ export const DocumentSurface = forwardRef<DocumentSurfaceHandle, Props>(function
               editing={editingHeaderFooter}
               editorRef={props.headerFooterEditorRef}
               onEdit={props.onEditHeaderFooter}
+              readOnly={props.readOnly}
               onHeaderFooterChange={props.onHeaderFooterChange}
               onFootnoteChange={props.onFootnoteChange}
               onImageUpload={props.onImageUpload}

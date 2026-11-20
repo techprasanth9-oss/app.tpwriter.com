@@ -21,6 +21,35 @@ export function apiUrl(path: string): string {
   return `${BASE}${path}`;
 }
 
+/**
+ * Share-link token for documents opened through a link (`?share=…`).
+ * Kept per tab, sent as `X-Share-Token` on every request; the API only
+ * honours it for the document it belongs to.
+ */
+const SHARE_KEY = "tp.shareTokens";
+
+function shareTokens(): Record<string, string> {
+  try {
+    return JSON.parse(sessionStorage.getItem(SHARE_KEY) ?? "{}") as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+export function setShareToken(documentId: string, token: string): void {
+  try {
+    sessionStorage.setItem(SHARE_KEY, JSON.stringify({ ...shareTokens(), [documentId]: token }));
+  } catch {
+    /* storage unavailable — the link works for this page load only */
+  }
+}
+
+/** Token for the document a request path targets, if one was stored. */
+function shareTokenFor(path: string): string | undefined {
+  const id = /^\/documents\/([A-Za-z0-9]+)/.exec(path)?.[1];
+  return id ? shareTokens()[id] : undefined;
+}
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -44,7 +73,10 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
     method,
     credentials: "include",
     signal,
-    headers: body !== undefined ? { "content-type": "application/json" } : undefined,
+    headers: {
+      ...(body !== undefined ? { "content-type": "application/json" } : {}),
+      ...(shareTokenFor(path) ? { "x-share-token": shareTokenFor(path)! } : {}),
+    },
   };
   if (body !== undefined) init.body = JSON.stringify(body);
 

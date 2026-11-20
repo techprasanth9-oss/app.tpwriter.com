@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useSearch } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import type EditorJS from "@editorjs/editorjs";
 import { DEFAULT_IMPORT_LIMITS } from "~/lib/editor/docx/import/types";
 import { uploadEmbeddedImages } from "~/lib/editor/docx/uploadEmbedded";
@@ -33,6 +34,13 @@ import { EditorRibbon } from "./EditorRibbon";
 import { LayoutDialog } from "./LayoutDialog";
 import { ThumbnailsSidebar } from "./ThumbnailsSidebar";
 import { usePrintActions } from "~/lib/editor/print/usePrintActions";
+import { canAtLeast, listPeople } from "~/lib/api/collab";
+import { useAuth } from "~/hooks/useAuth";
+import { CommentsPanel, NotificationsBell, useCommentsUi } from "./comments";
+import { VersionHistoryPanel } from "./history";
+import { applyToEditor } from "~/lib/editor/collab/applyToEditor";
+import { usePresence } from "~/hooks/usePresence";
+import { ShareDialog } from "./ShareDialog";
 
 async function uploadImage(file: File): Promise<{ url: string }> {
   const { url } = await uploadImageToApi(file);
@@ -83,6 +91,12 @@ interface Props {
 export function DocumentEditor({ documentId }: Props) {
   const navigate = useNavigate();
   const docQuery = useDocument(documentId);
+  /** Bumped after a version restore: a fresh editor on the restored content. */
+  const [reloadKey, setReloadKey] = useState(0);
+  const reload = useCallback(async () => {
+    await docQuery.refetch();
+    setReloadKey((k) => k + 1);
+  }, [docQuery]);
 
   if (docQuery.isLoading) {
     return <div className="doc-full-loading">Loading document…</div>;
@@ -98,12 +112,15 @@ export function DocumentEditor({ documentId }: Props) {
     );
   }
   // Keyed so switching documents gives a fresh editor + autosave baseline.
-  return <EditorWorkspace key={documentId} doc={docQuery.data} />;
+  return <EditorWorkspace key={`${documentId}:${reloadKey}`} doc={docQuery.data} onReload={reload} />;
 }
 
-function EditorWorkspace({ doc }: { doc: FullDocument }) {
+function EditorWorkspace({ doc, onReload }: { doc: FullDocument; onReload: () => Promise<void> }) {
   const navigate = useNavigate();
   const documentId = doc.id;
+  const role = doc.role ?? "owner";
+  const canEdit = canAtLeast(role, "editor");
+  const canComment = canAtLeast(role, "commenter");
 
   const [title, setTitle] = useState(doc.title);
   const [layout, setLayout] = useState<PageLayout>(doc.defaultLayout);
@@ -121,6 +138,8 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
     cleanPageSetup(doc.pageSetup, doc.headerBlocks, doc.footerBlocks),
   );
   const [editingHF, setEditingHF] = useState<HeaderFooterTarget | null>(null);
+  const editingHFRef = useRef(editingHF);
+  editingHFRef.current = editingHF;
   /** Layout of the caret's section (the document's, or a section break's). */
   const [section, setSection] = useState<{ breakId: string; layout: PageLayout } | null>(null);
   const [stylesOpen, setStylesOpen] = useState(false);
@@ -131,6 +150,11 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
   const [showStatusBar, setShowStatusBar] = useState(() => readPref("tp.statusBar", true));
   /** Bumps on every content change (find re-search, word count). */
   const [version, setVersion] = useState(0);
+  const [shareOpen, setShareOpen] = useState(false);
+  /** Paragraphs someone else also edited (this person's version kept). */
+  const [collisions, setCollisions] = useState(0);
+  /** The server's comment counter — comments refetch when it moves. */
+  const [commentsVersion, setCommentsVersion] = useState(0);
 
   const editorRef = useRef<EditorJS | null>(null);
   const historyRef = useRef<EditorHistory | null>(null);
@@ -144,6 +168,8 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const docRootRef = useRef<HTMLElement | null>(null);
   const copiedFormatRef = useRef<CopiedFormat | null>(null);
+  const savedTitleRef = useRef(doc.title);
+  const viewerBlocksRef = useRef<DiffBlock[]>(doc.blocks as DiffBlock[]);
 
   const styles = useMemo(() => resolveStyles(styleOverrides), [styleOverrides]);
   const stylesCss = useMemo(() => stylesToCss(styles, ".tp-document"), [styles]);
@@ -155,7 +181,80 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
     // changed (legacy alignment shapes) differ from it, so the first save
     // after an edit rewrites exactly those — migrating them for good.
     initialBlocks: doc.blocks as DiffBlock[],
-    getBlocks: async () => (editorRef.current ? readBlocks(editorRef.current) : null),
+    // A read-only editor can't save(); it shows exactly what it was last
+    // given, so that is its content.
+    getBlocks: async () =>
+      !canEdit ? viewerBlocksRef.current : editorRef.current ? readBlocks(editorRef.current) : null,
+    readOnly: !canEdit,
+    // Others' saves, merged in block by block. Blocks that came from the
+    // server are sanitised like any loaded content; the rest are the
+    // editor's own (same objects) and are left alone.
+    onRemoteContent: async ({ current, next }) => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      const mine = new Set(current);
+      const clean = next.map((b) =>
+        mine.has(b) ? b : (sanitizeEditorData(normalizeBlocks([b as EditorBlock]))[0] as DiffBlock),
+      );
+      if (!canEdit) {
+        await editor.render({ time: Date.now(), blocks: clean as EditorBlock[] });
+        viewerBlocksRef.current = next;
+      } else if (historyRef.current) {
+        await historyRef.current.applyRemote({ current, next: clean });
+      } else {
+        await applyToEditor(editor, current, clean);
+      }
+      setVersion((v) => v + 1);
+    },
+    onCollisions: (ids) => setCollisions((n) => n + ids.length),
+    onRemoteMeta: (meta) => {
+      savedTitleRef.current = meta.title;
+      // Not while this person is typing a new title.
+      if (!document.activeElement?.classList.contains("doc-title-input")) setTitle(meta.title);
+      setLayout(meta.defaultLayout);
+      setStyleOverrides(meta.styles ?? {});
+      // Don't yank headers / footers / footnotes from under someone typing
+      // in them; the next local change saves the merged object anyway.
+      if (!pendingPageSetupRef.current && !editingHFRef.current) {
+        setPageSetup(cleanPageSetup(meta.pageSetup, meta.headerBlocks, meta.footerBlocks));
+      }
+    },
+    onCommentsVersion: setCommentsVersion,
+  });
+
+  const closeShare = useCallback(() => setShareOpen(false), []);
+
+  // ── Comments, mentions, version history ─────────────────────────────
+  const { user } = useAuth();
+  const comments = useCommentsUi();
+  const people = useQuery({
+    queryKey: ["people", documentId],
+    queryFn: () => listPeople(documentId),
+    enabled: canComment,
+    staleTime: 60_000,
+  });
+  const search = useSearch({ strict: false }) as { thread?: string };
+  const { showThread } = comments;
+  useEffect(() => {
+    if (search.thread) showThread(search.thread);
+  }, [search.thread, showThread]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyBlocks, setHistoryBlocks] = useState<EditorBlock[]>([]);
+  const openHistory = useCallback(async () => {
+    const editor = editorRef.current;
+    setHistoryBlocks(editor ? ((await readBlocks(editor)) as EditorBlock[]) : []);
+    setHistoryOpen(true);
+  }, []);
+  const startComment = useCallback(() => {
+    if (!comments.beginComment(docRootRef.current)) {
+      alert("Select some text in one paragraph to comment on it.");
+    }
+  }, [comments]);
+
+  const present = usePresence({
+    documentId,
+    canEdit,
+    getRoot: useCallback(() => docRootRef.current, []),
   });
 
   const printActions = usePrintActions({
@@ -175,13 +274,15 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
 
   const handleReady = useCallback((editor: EditorJS) => {
     editorRef.current = editor;
+    const root = document.querySelector<HTMLElement>(".tp-document");
+    docRootRef.current = root;
+    // Read-only: nothing to undo, and save() (which history uses) throws.
+    if (!canEdit) return;
     const history = new EditorHistory(editor);
     historyRef.current = history;
     void history.record();
-    const root = document.querySelector<HTMLElement>(".tp-document");
-    docRootRef.current = root;
     setCommands(new EditorCommands(editor, history, root ?? document.body));
-  }, []);
+  }, [canEdit]);
 
   useEffect(() => () => commands?.dispose(), [commands]);
 
@@ -294,6 +395,20 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
     },
     [commands, openLinkDialog],
   );
+
+  // Ctrl/⌘+Alt+M: comment on the selection. Document-level, because in a
+  // read-only editor focus stays on <body> rather than in the document.
+  useEffect(() => {
+    if (!canComment) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.altKey && e.code === "KeyM") {
+        e.preventDefault();
+        startComment();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [canComment, startComment]);
 
   // ── Page setup: headers / footers, footnotes, decoration ────────────
 
@@ -426,7 +541,7 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
   useEffect(() => {
     let cancelled = false;
     void loadDraft(documentId).then((found) => {
-      if (cancelled || !found) return;
+      if (cancelled || !found || !canEdit) return;
       // Only offer it if it actually differs from what the server has.
       if (isEmptyDiff(diffContent(stateFromBlocks(doc.blocks as DiffBlock[]), found.blocks))) {
         void deleteDraft(documentId);
@@ -462,9 +577,8 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
 
   // ── Title (metadata, saved separately from content) ──────────────────
 
-  const savedTitleRef = useRef(doc.title);
   useEffect(() => {
-    if (title === savedTitleRef.current) return;
+    if (!canEdit || title === savedTitleRef.current) return;
     const timer = window.setTimeout(() => {
       const next = title.trim() || "Untitled document";
       updateDocument(documentId, { title: next })
@@ -474,7 +588,7 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
         .catch((err) => console.error("[title] save failed:", err));
     }, 800);
     return () => window.clearTimeout(timer);
-  }, [documentId, title]);
+  }, [canEdit, documentId, title]);
 
   // ── Page navigation ──────────────────────────────────────────────────
 
@@ -646,6 +760,44 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
         autosaveStatus={autosave.status}
         lastSavedAt={autosave.lastSavedAt}
         busy={busy}
+        readOnly={!canEdit}
+        accessLabel={canEdit ? null : canComment ? "Comment only" : "View only"}
+        present={present}
+        onShareClick={() => setShareOpen(true)}
+        extra={
+          <>
+            {canComment && (
+              <button
+                type="button"
+                className="doc-btn"
+                // Keep the document selection: don't take focus on press.
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={startComment}
+                title="Comment on the selected text (Ctrl/⌘+Alt+M)"
+              >
+                + Comment
+              </button>
+            )}
+            <button
+              type="button"
+              className={`doc-btn${comments.open ? " is-active" : ""}`}
+              aria-pressed={comments.open}
+              onClick={comments.toggle}
+            >
+              Comments
+            </button>
+            {canEdit && (
+              <button type="button" className="doc-btn" onClick={() => void openHistory()}>
+                Version history
+              </button>
+            )}
+            <NotificationsBell
+              onNavigate={(docId, threadId) =>
+                navigate({ to: "/documents/$documentId", params: { documentId: docId }, search: { thread: threadId } })
+              }
+            />
+          </>
+        }
         onPrintClick={() => void printActions.print()}
         onDownloadPdfClick={() => void printActions.downloadPdf()}
         pdfAvailable={printActions.pdfAvailable}
@@ -655,14 +807,26 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
       {autosave.status === "conflict" && (
         <div className="doc-conflict" role="alert">
           <span>
-            This document was changed in another tab or on another device. Your edits here
-            aren't being saved.
+            This document changed too much elsewhere to merge your edits automatically. Your edits
+            here aren't being saved.
           </span>
           <button type="button" className="doc-btn" onClick={() => window.location.reload()}>
             Load latest version
           </button>
           <button type="button" className="doc-btn" onClick={() => void handleKeepMine()}>
             Keep my version
+          </button>
+        </div>
+      )}
+
+      {collisions > 0 && (
+        <div className="doc-conflict tp-collision-note" role="status">
+          <span>
+            Someone else edited {collisions === 1 ? "a paragraph" : `${collisions} paragraphs`} you were also
+            editing. Your version was kept.
+          </span>
+          <button type="button" className="doc-btn" onClick={() => setCollisions(0)}>
+            Dismiss
           </button>
         </div>
       )}
@@ -710,7 +874,7 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
         onChange={handleFileSelected}
       />
 
-      <EditorRibbon
+      {canEdit && <EditorRibbon
         commands={commands}
         layout={layout}
         onLayoutChange={handleLayoutPatch}
@@ -732,7 +896,7 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
         onCloseHeaderFooter={() => setEditingHF(null)}
         onInsertField={insertField}
         onInsertFootnote={() => void insertFootnote()}
-      />
+      />}
 
       <div className="doc-body">
         <ThumbnailsSidebar
@@ -747,6 +911,7 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
             <DocumentSurface
               ref={surfaceRef}
               initialBlocks={doc.blocks}
+              readOnly={!canEdit}
               layout={layout}
               pageSetup={pageSetup}
               title={title}
@@ -771,6 +936,18 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
           />
         </main>
 
+        <CommentsPanel
+          documentId={documentId}
+          role={role}
+          currentUser={user ? { id: user.id, email: user.email, displayName: user.displayName } : null}
+          members={people.data ?? []}
+          root={docRootRef.current}
+          scrollContainer={scrollRef.current}
+          version={version}
+          commentsVersion={commentsVersion}
+          ui={comments}
+        />
+
         <FindReplaceDialog
           open={find.open}
           mode={find.mode}
@@ -792,6 +969,29 @@ function EditorWorkspace({ doc }: { doc: FullDocument }) {
         onApply={(url, text) => commands?.setLink(url, text) ?? false}
         onRemove={() => void commands?.removeLink()}
         onClose={() => setLinkDialog(null)}
+      />
+
+      <VersionHistoryPanel
+        documentId={documentId}
+        role={role}
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        currentBlocks={historyBlocks}
+        currentLayout={layout}
+        currentStyles={styleOverrides}
+        onFlush={async () => {
+          await autosave.saveNow();
+          await flushPageSetupRef.current();
+        }}
+        onRestored={() => void onReload()}
+      />
+
+      <ShareDialog
+        open={shareOpen}
+        documentId={documentId}
+        title={title}
+        role={role}
+        onClose={closeShare}
       />
 
       <StylesDialog open={stylesOpen} styles={styles} onSave={saveStyles} onClose={() => setStylesOpen(false)} />

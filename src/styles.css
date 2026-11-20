@@ -2015,3 +2015,34 @@ body {
 .tp-import-warnings details { flex: 1 1 auto; }
 .tp-import-warnings summary { cursor: pointer; }
 .tp-import-warnings ul { margin: 6px 0 0; padding-left: 20px; font-size: 12.5px; color: var(--tp-slate); }
+
+/* ── Collaboration: sharing, presence, access ─────────────────────────── */
+.tp-avatar {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 50%; flex: none;
+  background: var(--tp-slate); color: #fff; font-size: 11px; font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.doc-presence { display: flex; align-items: center; }
+.doc-presence__avatar { border: 2px solid var(--tp-cream); margin-left: -6px; cursor: default; }
+.doc-presence__avatar:first-child { margin-left: 0; }
+.doc-presence__more { background: var(--tp-cream-sunk); color: var(--tp-slate); margin-left: -6px; border: 2px solid var(--tp-cream); }
+.doc-access-badge {
+  margin-left: 8px; padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+  background: var(--tp-cream-sunk); color: var(--tp-slate); font-size: 12px;
+}
+.tp-share-dialog { width: min(560px, calc(100vw - 32px)); }
+.tp-share-add, .tp-share-link-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.tp-share-add input[type="email"] { flex: 1 1 200px; min-width: 0; }
+.tp-share-role { width: auto; }
+.tp-share-heading { margin: 18px 0 8px; font-size: 13px; font-weight: 600; color: var(--tp-ink); }
+.tp-share-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; max-height: 260px; overflow: auto; }
+.tp-share-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.tp-share-person { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.tp-share-person > span:last-child { display: flex; flex-direction: column; min-width: 0; }
+.tp-share-name { color: var(--tp-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tp-share-muted { color: var(--tp-slate); font-size: 12px; margin: 4px 0 0; }
+.tp-share-controls { display: flex; gap: 6px; align-items: center; }
+.tp-share-toggle { display: flex; gap: 8px; align-items: center; flex: 1 1 auto; }
+.tp-share-url { flex: 1 1 240px; min-width: 0; font-size: 12px; }
+.tp-collision-note { background: #eef6ff; border-color: #bcd7f5; }

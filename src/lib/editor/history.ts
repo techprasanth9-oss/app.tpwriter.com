@@ -1,5 +1,6 @@
 import type EditorJS from "@editorjs/editorjs";
 import { blockKey, type DiffBlock } from "./contentDiff";
+import { applyToEditor } from "./collab/applyToEditor";
 
 /**
  * Document-level undo/redo. EditorJS has none, and the browser's native
@@ -64,6 +65,45 @@ export class EditorHistory {
       if (!target || !this.current) return;
       this.undoStack.push(this.current);
       await this.apply(target);
+    });
+  }
+
+  /**
+   * Bring in someone else's changes (`current` → `next`) without making
+   * them undoable: the same change is replayed into every snapshot, so
+   * undo / redo only ever move this person's own edits.
+   */
+  applyRemote({ current, next }: { current: DiffBlock[]; next: DiffBlock[] }): Promise<void> {
+    return this.enqueue(async () => {
+      await this.recordNow();
+      this.applying = true;
+      try {
+        await applyToEditor(this.editor, current, next);
+      } finally {
+        this.applying = false;
+      }
+      const before = new Map(current.map((b) => [b.id, blockKey(b)]));
+      const after = new Map(next.map((b) => [b.id, b]));
+      const changed = next.filter((b) => before.has(b.id) && before.get(b.id) !== blockKey(b));
+      const removed = new Set(current.filter((b) => !after.has(b.id)).map((b) => b.id));
+      const added = next.map((b, i) => ({ b, prev: i > 0 ? next[i - 1]!.id : null })).filter(({ b }) => !before.has(b.id));
+      const rebase = (snap: Snapshot): Snapshot => {
+        const out: Snapshot = snap
+          .filter((b) => !removed.has(b.id))
+          .map((b) => {
+            const c = changed.find((x) => x.id === b.id);
+            return c ? { ...c, key: blockKey(c) } : b;
+          });
+        for (const { b, prev } of added) {
+          if (out.some((x) => x.id === b.id)) continue;
+          const at = prev === null ? 0 : out.findIndex((x) => x.id === prev) + 1;
+          out.splice(at, 0, { ...b, key: blockKey(b) });
+        }
+        return out;
+      };
+      this.undoStack = this.undoStack.map(rebase);
+      this.redoStack = this.redoStack.map(rebase);
+      this.current = await this.capture();
     });
   }
 

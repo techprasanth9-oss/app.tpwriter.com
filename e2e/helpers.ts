@@ -145,7 +145,10 @@ export async function caretToEnd(page: Page, text: string): Promise<void> {
  *  The text may span formatting (`<b>bold</b> and`), not editables. */
 export async function selectText(page: Page, text: string): Promise<void> {
   const ok = await page.evaluate((needle) => {
-    const editables = document.querySelectorAll<HTMLElement>('.codex-editor__redactor [contenteditable="true"]');
+    // Read-only roles (viewers, commenters) have no editable text.
+    const editables = document.querySelectorAll<HTMLElement>(
+      '.codex-editor__redactor [contenteditable="true"], .codex-editor__redactor .ce-paragraph:not([contenteditable="true"])',
+    );
     for (const editable of Array.from(editables)) {
       const nodes: Text[] = [];
       const walker = document.createTreeWalker(editable, NodeFilter.SHOW_TEXT);

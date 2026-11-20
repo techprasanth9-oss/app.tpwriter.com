@@ -1,3 +1,4 @@
+import { NotificationsBell } from "~/components/comments";
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { UserMenu } from "~/components/UserMenu";
@@ -30,6 +31,52 @@ export function DocumentListPage() {
     await deleteMut.mutateAsync(id);
   };
 
+  const mine = (docs ?? []).filter((d) => (d.role ?? "owner") === "owner");
+  const shared = (docs ?? []).filter((d) => d.role && d.role !== "owner");
+
+  const renderGrid = (list: typeof mine) => (
+    <ul className="docs-grid">
+      {list.map((doc) => {
+        const owned = (doc.role ?? "owner") === "owner";
+        return (
+          <li key={doc.id} className="doc-card">
+            <button type="button" className="doc-card-main" onClick={() => handleOpen(doc.id)}>
+              <div className="doc-card-paper">
+                <div className="doc-card-paper-inner">
+                  <div className="doc-card-lines" aria-hidden>
+                    <span />
+                    <span />
+                    <span />
+                    <span />
+                    <span />
+                  </div>
+                </div>
+              </div>
+              <div className="doc-card-title">{doc.title}</div>
+              <div className="doc-card-meta">
+                {owned ? `Updated ${formatRelative(doc.updatedAt)}` : `${doc.owner?.displayName ?? doc.owner?.email ?? "Someone"} · ${ROLE_NOUN[doc.role]}`}
+              </div>
+            </button>
+            {owned && (
+              <button
+                type="button"
+                className="doc-card-delete"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleDelete(doc.id, doc.title);
+                }}
+                title="Delete document"
+                aria-label={`Delete ${doc.title}`}
+              >
+                ×
+              </button>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+
   return (
     <div className="docs-root">
       <header className="docs-header">
@@ -37,6 +84,11 @@ export function DocumentListPage() {
           <h1 className="doc-brand">TP Writer</h1>
         </div>
         <div className="docs-header-right">
+          <NotificationsBell
+            onNavigate={(docId, threadId) =>
+              navigate({ to: "/documents/$documentId", params: { documentId: docId }, search: { thread: threadId } })
+            }
+          />
           <UserMenu />
         </div>
       </header>
@@ -77,54 +129,21 @@ export function DocumentListPage() {
               Couldn't load your documents.
             </div>
           )}
-          {!isLoading && !error && (!docs || docs.length === 0) && (
+          {!isLoading && !error && mine.length === 0 && (
             <div className="docs-empty">
               No documents yet. Create your first one above.
             </div>
           )}
 
-          {docs && docs.length > 0 && (
-            <ul className="docs-grid">
-              {docs.map((doc) => (
-                <li key={doc.id} className="doc-card">
-                  <button
-                    type="button"
-                    className="doc-card-main"
-                    onClick={() => handleOpen(doc.id)}
-                  >
-                    <div className="doc-card-paper">
-                      <div className="doc-card-paper-inner">
-                        <div className="doc-card-lines" aria-hidden>
-                          <span />
-                          <span />
-                          <span />
-                          <span />
-                          <span />
-                        </div>
-                      </div>
-                    </div>
-                    <div className="doc-card-title">{doc.title}</div>
-                    <div className="doc-card-meta">
-                      Updated {formatRelative(doc.updatedAt)}
-                    </div>
-                  </button>
-                  <button
-                    type="button"
-                    className="doc-card-delete"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDelete(doc.id, doc.title);
-                    }}
-                    title="Delete document"
-                    aria-label={`Delete ${doc.title}`}
-                  >
-                    ×
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+          {mine.length > 0 && renderGrid(mine)}
         </section>
+
+        {shared.length > 0 && (
+          <section className="docs-list">
+            <h2 className="docs-section-title">Shared with you</h2>
+            {renderGrid(shared)}
+          </section>
+        )}
       </main>
     </div>
   );
@@ -144,3 +163,5 @@ function formatRelative(iso: string): string {
   if (day < 30) return `${day} day${day === 1 ? "" : "s"} ago`;
   return new Date(iso).toLocaleDateString();
 }
+
+const ROLE_NOUN: Record<string, string> = { viewer: "can view", commenter: "can comment", editor: "can edit", owner: "owner" };

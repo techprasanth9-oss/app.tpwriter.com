@@ -82,7 +82,7 @@ test("Ctrl+Enter inserts a page break after the caret's paragraph", async ({ pag
   expect((await textOutsidePages(page)).bad).toEqual([]);
 });
 
-test("a stale tab gets a conflict banner instead of overwriting", async ({ page, context, request }) => {
+test("a second tab catches up live instead of overwriting", async ({ page, context, request }) => {
   const id = await createDocument(request, "Conflict", [
     { id: "a", type: "paragraph", data: { text: "Shared" } },
   ]);
@@ -95,9 +95,14 @@ test("a stale tab gets a conflict banner instead of overwriting", async ({ page,
   await other.keyboard.type(" (tab 2)");
   await waitSaved(other);
 
+  // Tab 1 receives tab 2's edit without a reload, then builds on it.
+  await expect(page.locator(".ce-paragraph")).toHaveText("Shared (tab 2)", { timeout: 15_000 });
   await page.locator(".ce-paragraph").click();
   await page.keyboard.press("End");
   await page.keyboard.type(" (tab 1)");
-  await expect(page.locator(".doc-conflict")).toBeVisible();
-  await expect(page.locator(".doc-save-status")).toHaveText(/conflict/);
+  await waitSaved(page);
+  await expect(page.locator(".doc-conflict[role=alert]")).toHaveCount(0);
+  await expect(other.locator(".ce-paragraph")).toHaveText("Shared (tab 2) (tab 1)", { timeout: 15_000 });
+  const doc = (await (await request.get(`/api/documents/${id}`)).json()) as { blocks: { data: { text: string } }[] };
+  expect(doc.blocks[0]!.data.text).toBe("Shared (tab 2) (tab 1)");
 });

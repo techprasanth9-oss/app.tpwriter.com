@@ -46,11 +46,16 @@ export interface DocumentMeta {
 
 export interface FullDocument extends DocumentMeta {
   blocks: EditorBlock[];
+  /** The caller's role on this document (Phase 6 sharing). */
+  role: import("./collab").Role;
 }
 
 export interface DocumentListItem {
   id: string;
   title: string;
+  /** The caller's role; "owner" for their own documents. */
+  role: import("./collab").Role;
+  owner: import("./collab").PublicUser;
   defaultLayout: PageLayout;
   blockCount: number;
   createdAt: string;
@@ -107,6 +112,6 @@ export interface ContentSave {
 export function saveContent(
   id: string,
   body: ContentSave,
-): Promise<{ revision: number; updatedAt: string }> {
+): Promise<{ revision: number; updatedAt: string; merged?: boolean }> {
   return api(`/documents/${id}/content`, { method: "PUT", body });
 }

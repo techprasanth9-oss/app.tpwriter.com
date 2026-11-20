@@ -5,7 +5,7 @@ import {
   redirect,
 } from "@tanstack/react-router";
 import type { QueryClient } from "@tanstack/react-query";
-import { ApiError } from "./lib/api/client";
+import { ApiError, setShareToken } from "./lib/api/client";
 import * as authApi from "./lib/api/auth";
 import { DocumentEditor } from "./components/DocumentEditor";
 import { PrintView } from "./components/PrintView";
@@ -45,12 +45,20 @@ const rootRoute = createRootRouteWithContext<RouterContext>()({
   component: () => <Outlet />,
 });
 
+/** Only same-app paths are followed after login (no open redirects). */
+export function safeRedirect(value: unknown): string | undefined {
+  return typeof value === "string" && /^\/(?![/\\])/.test(value) ? value : undefined;
+}
+
 const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/login",
-  beforeLoad: async ({ context }) => {
+  validateSearch: (search: Record<string, unknown>): { redirect?: string } => ({
+    redirect: safeRedirect(search.redirect),
+  }),
+  beforeLoad: async ({ context, search }) => {
     const user = await fetchMeSafely(context);
-    if (user) throw redirect({ to: "/" });
+    if (user) throw redirect({ href: search.redirect ?? "/" });
   },
   component: LoginPage,
 });
@@ -68,9 +76,15 @@ const documentListRoute = createRoute({
 const documentDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/documents/$documentId",
-  beforeLoad: async ({ context }) => {
+  validateSearch: (search: Record<string, unknown>): { share?: string; thread?: string } => ({
+    share: typeof search.share === "string" ? search.share : undefined,
+    thread: typeof search.thread === "string" ? search.thread : undefined,
+  }),
+  beforeLoad: async ({ context, params, search, location }) => {
+    // A share link's token is kept for this tab, before anything loads.
+    if (search.share) setShareToken(params.documentId, search.share);
     const user = await fetchMeSafely(context);
-    if (!user) throw redirect({ to: "/login" });
+    if (!user) throw redirect({ to: "/login", search: { redirect: location.href } });
   },
   component: DocumentDetailPage,
 });
@@ -79,7 +93,12 @@ const documentDetailRoute = createRoute({
 const documentPrintRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/documents/$documentId/print",
-  beforeLoad: async ({ context }) => {
+  validateSearch: (search: Record<string, unknown>): { share?: string } => ({
+    share: typeof search.share === "string" ? search.share : undefined,
+  }),
+  beforeLoad: async ({ context, params, search }) => {
+    // The server's PDF renderer passes a link-holder's token this way.
+    if (search.share) setShareToken(params.documentId, search.share);
     const user = await fetchMeSafely(context);
     if (!user) throw redirect({ to: "/login" });
   },

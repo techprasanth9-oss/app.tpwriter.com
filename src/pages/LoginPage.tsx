@@ -1,4 +1,4 @@
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouter, useSearch } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
 import { ApiError } from "~/lib/api/client";
 import { useAuth } from "~/hooks/useAuth";
@@ -7,6 +7,8 @@ type Mode = "login" | "signup";
 
 export function LoginPage() {
   const navigate = useNavigate();
+  const router = useRouter();
+  const { redirect: back } = useSearch({ from: "/login" });
   const { login, signup, loginState, signupState } = useAuth();
   const [mode, setMode] = useState<Mode>("login");
   const [email, setEmail] = useState("");
@@ -25,7 +27,8 @@ export function LoginPage() {
       } else {
         await signup({ email, password, displayName: displayName || undefined });
       }
-      navigate({ to: "/" });
+      if (back) router.history.push(back);
+      else navigate({ to: "/" });
     } catch (err) {
       setError(humaniseAuthError(err, mode));
     }

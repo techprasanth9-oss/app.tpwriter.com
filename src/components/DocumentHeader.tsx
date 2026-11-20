@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { AutosaveStatus } from "~/hooks/useAutosave";
+import type { Presence } from "~/lib/api/collab";
 import type { PageLayout } from "~/lib/api/documents";
+import { initials } from "./ShareDialog";
 
 interface Props {
   title: string;
@@ -24,6 +26,15 @@ interface Props {
   /** false when the API can't render PDFs (501) — the item is disabled. */
   pdfAvailable?: boolean | null;
   pdfBusy?: boolean;
+  /** Viewers / commenters can't rename, import or save. */
+  readOnly?: boolean;
+  /** Shown next to the title for read-only roles ("View only"). */
+  accessLabel?: string | null;
+  /** Other people on the document right now. */
+  present?: Presence[];
+  onShareClick?: () => void;
+  /** Extra header controls (comments, history, notifications). */
+  extra?: ReactNode;
 }
 
 const ZOOM_STOPS = [0.5, 0.75, 1, 1.25, 1.5, 2];
@@ -47,6 +58,11 @@ export function DocumentHeader({
   onDownloadPdfClick,
   pdfAvailable,
   pdfBusy = false,
+  readOnly = false,
+  accessLabel,
+  present = [],
+  onShareClick,
+  extra,
 }: Props) {
   return (
     <header className="doc-header">
@@ -70,14 +86,23 @@ export function DocumentHeader({
           onChange={(e) => onTitleChange(e.target.value)}
           placeholder="Untitled document"
           aria-label="Document title"
+          readOnly={readOnly}
         />
+        {accessLabel && <span className="doc-access-badge">{accessLabel}</span>}
       </div>
 
       <div className="doc-header-right">
-        {autosaveStatus && (
+        {present.length > 0 && <PresenceAvatars present={present} />}
+        {extra}
+        {onShareClick && (
+          <button type="button" className="doc-btn doc-btn-primary" onClick={onShareClick} title="Share with people or get a link">
+            Share
+          </button>
+        )}
+        {autosaveStatus && !readOnly && (
           <AutosaveIndicator status={autosaveStatus} lastSavedAt={lastSavedAt} />
         )}
-        {onSaveClick && (
+        {onSaveClick && !readOnly && (
           <button
             type="button"
             className="doc-btn"
@@ -88,9 +113,11 @@ export function DocumentHeader({
             Save
           </button>
         )}
-        <button type="button" className="doc-btn" onClick={onImportClick} disabled={busy}>
-          Import DOCX
-        </button>
+        {!readOnly && (
+          <button type="button" className="doc-btn" onClick={onImportClick} disabled={busy}>
+            Import DOCX
+          </button>
+        )}
         <button type="button" className="doc-btn" onClick={onExportClick} disabled={busy}>
           Export DOCX
         </button>
@@ -102,7 +129,7 @@ export function DocumentHeader({
             pdfBusy={pdfBusy}
           />
         )}
-        {onLayoutClick && (
+        {onLayoutClick && !readOnly && (
           <button
             type="button"
             className="doc-btn"
@@ -254,4 +281,28 @@ function formatRelative(then: Date): string {
   const hr = Math.round(min / 60);
   if (hr < 24) return `${hr} hr ago`;
   return then.toLocaleString();
+}
+
+/** Everyone else on the document; editors show where their caret is. */
+function PresenceAvatars({ present }: { present: Presence[] }) {
+  const shown = present.slice(0, 4);
+  return (
+    <div className="doc-presence" aria-label={`${present.length} other ${present.length === 1 ? "person" : "people"} here`}>
+      {shown.map((p) => {
+        const name = p.displayName ?? p.email;
+        return (
+          <span
+            key={p.id}
+            className="tp-avatar doc-presence__avatar"
+            style={{ background: p.color }}
+            title={`${name} — ${p.state === "editing" ? "editing" : "viewing"}`}
+            data-testid="presence-avatar"
+          >
+            {initials(name)}
+          </span>
+        );
+      })}
+      {present.length > shown.length && <span className="tp-avatar doc-presence__more">+{present.length - shown.length}</span>}
+    </div>
+  );
 }

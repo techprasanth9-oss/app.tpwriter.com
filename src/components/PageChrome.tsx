@@ -70,6 +70,8 @@ interface OverlayProps {
   onHeaderFooterChange: (area: HeaderFooterArea, kind: HeaderFooterKind, blocks: EditorBlock[]) => void;
   onFootnoteChange: (id: string, html: string) => void;
   onImageUpload: (file: File) => Promise<{ url: string }>;
+  /** Viewers / commenters: no header, footer or footnote editing. */
+  readOnly?: boolean;
 }
 
 /** Interactive layer for one page: header / footer zones and footnotes. */
@@ -92,8 +94,8 @@ export function PageOverlay(props: OverlayProps) {
       <div
         className={`tp-hf tp-hf--${area}${isEditing ? " is-editing" : ""}`}
         style={{ ...style, left: page.marginLeft, width: contentWidth }}
-        onDoubleClick={() => !isEditing && props.onEdit({ area, kind, page: index })}
-        title={isEditing ? undefined : `Double-click to edit the ${label.toLowerCase()}`}
+        onDoubleClick={() => !isEditing && !props.readOnly && props.onEdit({ area, kind, page: index })}
+        title={isEditing || props.readOnly ? undefined : `Double-click to edit the ${label.toLowerCase()}`}
         data-testid={`${area}-${index}`}
       >
         {isEditing ? (
@@ -127,7 +129,7 @@ export function PageOverlay(props: OverlayProps) {
           {page.footnoteIds.map((id) => (
             <div className="tp-fn" key={id}>
               <span className="tp-fn__num">{props.footnoteOrder.indexOf(id) + 1}</span>
-              <FootnoteText id={id} html={setup.footnotes[id] ?? ""} onChange={props.onFootnoteChange} />
+              <FootnoteText id={id} html={setup.footnotes[id] ?? ""} onChange={props.onFootnoteChange} readOnly={props.readOnly} />
             </div>
           ))}
         </div>
@@ -143,7 +145,17 @@ const StaticBlocks = memo(function StaticBlocks({ blocks, values }: { blocks: Ed
 
 /** Editable footnote text. Uncontrolled while focused so typing isn't
  *  clobbered by re-renders. */
-function FootnoteText({ id, html, onChange }: { id: string; html: string; onChange: (id: string, html: string) => void }) {
+function FootnoteText({
+  id,
+  html,
+  onChange,
+  readOnly,
+}: {
+  id: string;
+  html: string;
+  onChange: (id: string, html: string) => void;
+  readOnly?: boolean;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = ref.current;
@@ -153,9 +165,10 @@ function FootnoteText({ id, html, onChange }: { id: string; html: string; onChan
     <div
       ref={ref}
       className="tp-fn__text"
-      contentEditable
+      contentEditable={!readOnly}
       suppressContentEditableWarning
       role="textbox"
+      aria-readonly={readOnly || undefined}
       aria-label="Footnote text"
       data-fn-text={id}
       onInput={(e) => onChange(id, sanitizeHtml((e.target as HTMLElement).innerHTML))}

@@ -10,6 +10,8 @@ import {
   type SavedState,
 } from "~/lib/editor/contentDiff";
 import { deleteDraft, saveDraft } from "~/lib/editor/drafts";
+import { getChanges, type DocumentChanges } from "~/lib/api/collab";
+import { mergeRemote } from "~/lib/editor/collab/mergeRemote";
 
 export type AutosaveStatus =
   | "idle"
@@ -18,8 +20,16 @@ export type AutosaveStatus =
   | "saved"
   /** Network / server failure — retrying automatically. */
   | "error"
-  /** Someone else saved a newer revision; autosave is paused. */
+  /** We're too far behind the server to merge; autosave is paused. */
   | "conflict";
+
+/** What live sync hands the editor after merging others' changes. */
+export interface RemoteUpdate {
+  /** Editor content the merge was computed from. */
+  current: DiffBlock[];
+  /** Merged content the editor should now show. */
+  next: DiffBlock[];
+}
 
 interface Options {
   documentId: string;
@@ -29,6 +39,18 @@ interface Options {
   /** Current editor content, or null if the editor isn't ready. */
   getBlocks: () => Promise<DiffBlock[] | null>;
   debounceMs?: number;
+  /** Viewers / commenters: pull others' changes, never save. */
+  readOnly?: boolean;
+  /** How often to pull others' changes (0 = off). */
+  liveIntervalMs?: number;
+  /** Put merged content into the editor. */
+  onRemoteContent?: (update: RemoteUpdate) => Promise<void>;
+  /** Blocks both this editor and someone else changed (ours was kept). */
+  onCollisions?: (blockIds: string[]) => void;
+  /** Title / layout / page setup / styles changed elsewhere. */
+  onRemoteMeta?: (meta: NonNullable<DocumentChanges["meta"]>) => void;
+  /** The server's comment counter (refetch comments when it moves). */
+  onCommentsVersion?: (version: number) => void;
 }
 
 interface Result {
@@ -61,6 +83,9 @@ export function useAutosave({
   initialBlocks,
   getBlocks,
   debounceMs = 1200,
+  readOnly = false,
+  liveIntervalMs = 3000,
+  ...callbacks
 }: Options): Result {
   const [status, setStatus] = useState<AutosaveStatus>("idle");
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
@@ -76,6 +101,39 @@ export function useAutosave({
   const conflictRef = useRef(false);
   const getBlocksRef = useRef(getBlocks);
   getBlocksRef.current = getBlocks;
+  const callbacksRef = useRef(callbacks);
+  callbacksRef.current = callbacks;
+  const conflictStreakRef = useRef(0);
+
+  /**
+   * Merge everything saved elsewhere since our revision into the editor
+   * and the baseline. Caller holds the lock (`inFlightRef`).
+   */
+  const pullLocked = useCallback(async (): Promise<void> => {
+    const changes = await getChanges(documentId, revisionRef.current);
+    const cb = callbacksRef.current;
+    cb.onCommentsVersion?.(changes.commentsVersion);
+    if (changes.reset) {
+      conflictRef.current = true;
+      setStatus("conflict");
+      setError("This document changed too much elsewhere to merge.");
+      return;
+    }
+    if (changes.revision === revisionRef.current) return;
+    const blocks = await getBlocksRef.current();
+    if (!blocks) return;
+    const merged = mergeRemote(savedRef.current, blocks, changes);
+    if (merged.changed) await cb.onRemoteContent?.({ current: blocks, next: merged.local });
+    savedRef.current = merged.base;
+    revisionRef.current = changes.revision;
+    if (changes.meta) cb.onRemoteMeta?.(changes.meta);
+    if (merged.collisions.length > 0) {
+      cb.onCollisions?.(merged.collisions);
+      // Our version of those blocks still has to be written back.
+      dirtyRef.current = true;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [documentId]);
 
   const clearTimers = () => {
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
@@ -85,7 +143,7 @@ export function useAutosave({
   };
 
   const doSave = useCallback(async (): Promise<void> => {
-    if (conflictRef.current) return;
+    if (conflictRef.current || readOnly) return;
     if (inFlightRef.current) {
       dirtyRef.current = true;
       return;
@@ -115,7 +173,14 @@ export function useAutosave({
         ...diff,
       });
       savedRef.current = applyDiff(savedRef.current, diff);
-      revisionRef.current = res.revision;
+      conflictStreakRef.current = 0;
+      if (res.merged) {
+        // Others saved in between and the server merged around them: catch
+        // up from our old revision (their blocks + an echo of ours).
+        await pullLocked().catch(() => undefined);
+      } else {
+        revisionRef.current = res.revision;
+      }
       retryDelayRef.current = MIN_RETRY_MS;
       // Edits made during the request will write a fresh draft next round.
       if (!dirtyRef.current) await deleteDraft(documentId);
@@ -125,6 +190,19 @@ export function useAutosave({
       setStatus(dirtyRef.current ? "pending" : "saved");
       setLastSavedAt(new Date());
     } catch (err) {
+      if (err instanceof ApiError && err.status === 409 && conflictStreakRef.current < 3) {
+        // Someone changed the same blocks (or the block order): merge their
+        // version in, then save ours on top of it straight away.
+        conflictStreakRef.current++;
+        try {
+          await pullLocked();
+        } catch {
+          /* fall through to a normal retry */
+        }
+        dirtyRef.current = true;
+        setStatus("pending");
+        return;
+      }
       if (err instanceof ApiError && err.status === 409) {
         conflictRef.current = true;
         setStatus("conflict");
@@ -149,7 +227,7 @@ export function useAutosave({
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [documentId, debounceMs]);
+  }, [documentId, debounceMs, readOnly, pullLocked]);
 
   /** Replace our saved-state baseline with what the server has now. */
   const resync = useCallback(async () => {
@@ -159,12 +237,41 @@ export function useAutosave({
   }, [documentId]);
 
   const markDirty = useCallback(() => {
+    if (readOnly) return;
     dirtyRef.current = true;
     if (conflictRef.current) return;
     setStatus((s) => (s === "saving" ? s : "pending"));
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     timerRef.current = window.setTimeout(() => void doSave(), debounceMs);
-  }, [debounceMs, doSave]);
+  }, [debounceMs, doSave, readOnly]);
+
+  // Live: pull others' changes every few seconds while the tab is visible.
+  useEffect(() => {
+    if (!liveIntervalMs) return;
+    const tick = async () => {
+      if (document.hidden || inFlightRef.current || conflictRef.current) return;
+      inFlightRef.current = true;
+      try {
+        await pullLocked();
+      } catch {
+        /* offline / transient — next tick */
+      } finally {
+        inFlightRef.current = false;
+        if (dirtyRef.current && !conflictRef.current && timerRef.current === null && retryRef.current === null) {
+          timerRef.current = window.setTimeout(() => void doSave(), debounceMs);
+        }
+      }
+    };
+    const timer = window.setInterval(() => void tick(), liveIntervalMs);
+    const onVisible = () => {
+      if (!document.hidden) void tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [liveIntervalMs, pullLocked, doSave, debounceMs]);
 
   const saveNow = useCallback(() => doSave(), [doSave]);
 
