@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { confirmDialog } from "~/components/ui/dialogs";
 import { isSafeImageUrl, isSafeLinkUrl } from "../safeUrl";
 import "./ImageTool.css";
 /**
@@ -1661,12 +1662,16 @@ export default class ImageTool {
     return this.runIngest(() => this.ingestFile(file), { replace: true });
   }
 
-  private resetToOriginal(): void {
-    const confirmMsg = t("editor.tools.image.resetConfirm", {
-      defaultValue:
-        "Reset all transforms (rotation, flip, zoom, border, caption, alt text)?",
+  private async resetToOriginal(): Promise<void> {
+    const ok = await confirmDialog({
+      title: t("editor.tools.image.resetTitle", { defaultValue: "Reset this image?" }),
+      message: t("editor.tools.image.resetConfirm", {
+        defaultValue: "Rotation, flip, zoom, border, caption and alt text go back to their originals.",
+      }),
+      confirmLabel: t("editor.tools.image.resetAction", { defaultValue: "Reset image" }),
+      danger: true,
     });
-    if (typeof window !== "undefined" && !window.confirm(confirmMsg)) return;
+    if (!ok) return;
     this.data.rotation = 0;
     this.data.flipX = false;
     this.data.flipY = false;

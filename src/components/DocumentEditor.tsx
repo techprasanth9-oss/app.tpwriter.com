@@ -41,6 +41,8 @@ import { VersionHistoryPanel } from "./history";
 import { applyToEditor } from "~/lib/editor/collab/applyToEditor";
 import { usePresence } from "~/hooks/usePresence";
 import { ShareDialog } from "./ShareDialog";
+import { FileMenu } from "./FileMenu";
+import { alertDialog, confirmDialog } from "./ui/dialogs";
 
 async function uploadImage(file: File): Promise<{ url: string }> {
   const { url } = await uploadImageToApi(file);
@@ -224,6 +226,7 @@ function EditorWorkspace({ doc, onReload }: { doc: FullDocument; onReload: () =>
 
   const closeShare = useCallback(() => setShareOpen(false), []);
 
+
   // ── Comments, mentions, version history ─────────────────────────────
   const { user } = useAuth();
   const comments = useCommentsUi();
@@ -247,7 +250,11 @@ function EditorWorkspace({ doc, onReload }: { doc: FullDocument; onReload: () =>
   }, []);
   const startComment = useCallback(() => {
     if (!comments.beginComment(docRootRef.current)) {
-      alert("Select some text in one paragraph to comment on it.");
+      void alertDialog({
+        tone: "info",
+        title: "Select text to comment on",
+        message: "Highlight a word or phrase within one paragraph, then add your comment.",
+      });
     }
   }, [comments]);
 
@@ -622,7 +629,10 @@ function EditorWorkspace({ doc, onReload }: { doc: FullDocument; onReload: () =>
       if (!file || !editor) return;
 
       if (file.size > DEFAULT_IMPORT_LIMITS.maxBytes) {
-        alert(`That file is too large to import (max ${Math.round(DEFAULT_IMPORT_LIMITS.maxBytes / 1024 / 1024)} MB).`);
+        void alertDialog({
+          title: "That file is too large",
+          message: `Word documents up to ${Math.round(DEFAULT_IMPORT_LIMITS.maxBytes / 1024 / 1024)} MB can be imported.`,
+        });
         return;
       }
 
@@ -636,7 +646,13 @@ function EditorWorkspace({ doc, onReload }: { doc: FullDocument; onReload: () =>
         if (!imported.blocks.some((b) => b.type !== "pageBreak" && b.type !== "sectionBreak")) {
           throw new Error("The file doesn't contain any content we can import.");
         }
-        if (!confirm(`Replace the contents of "${title}" with "${file.name}"?`)) return;
+        const replace = await confirmDialog({
+          title: "Replace this document's content?",
+          message: `Everything in “${title}” will be replaced with “${file.name}”. You can undo this from Version history.`,
+          confirmLabel: "Replace content",
+          danger: true,
+        });
+        if (!replace) return;
 
         // Embedded images become normal uploads (the document stays small).
         const { value: content, failed } = await uploadEmbeddedImages(
@@ -671,7 +687,10 @@ function EditorWorkspace({ doc, onReload }: { doc: FullDocument; onReload: () =>
         setImportWarnings(warnings);
       } catch (err) {
         console.error("[importDocx] failed:", err);
-        alert(`Couldn't import that DOCX.\n\n${err instanceof Error ? err.message : String(err)}`);
+        void alertDialog({
+          title: "Couldn't import that DOCX",
+          message: err instanceof Error ? err.message : String(err),
+        });
       } finally {
         setBusy(false);
       }
@@ -693,7 +712,7 @@ function EditorWorkspace({ doc, onReload }: { doc: FullDocument; onReload: () =>
       triggerDownload(blob, `${sanitizeFilename(title)}.docx`);
     } catch (err) {
       console.error("[exportDocx] failed:", err);
-      alert(`Couldn't export.\n\n${err instanceof Error ? err.message : String(err)}`);
+      void alertDialog({ title: "Couldn't export", message: err instanceof Error ? err.message : String(err) });
     } finally {
       setBusy(false);
     }
@@ -733,75 +752,72 @@ function EditorWorkspace({ doc, onReload }: { doc: FullDocument; onReload: () =>
   }, [autosave, navigate]);
 
   const handleKeepMine = useCallback(async () => {
-    if (
-      !confirm(
-        "Overwrite the other version with yours?\n\nChanges made elsewhere since you opened this document will be lost.",
-      )
-    ) {
-      return;
-    }
+    const ok = await confirmDialog({
+      title: "Overwrite the other version?",
+      message: "Changes made elsewhere since you opened this document will be lost.",
+      confirmLabel: "Overwrite",
+      danger: true,
+    });
+    if (!ok) return;
     await autosave.overwriteServer();
   }, [autosave]);
+
+  const fileMenu = (
+    <FileMenu
+      onSave={canEdit ? () => void autosave.saveNow() : undefined}
+      onShare={() => setShareOpen(true)}
+      onImport={canEdit ? handleImportClick : undefined}
+      onExportDocx={() => void handleExportClick()}
+      onPrint={() => void printActions.print()}
+      onDownloadPdf={() => void printActions.downloadPdf()}
+      pdfAvailable={printActions.pdfAvailable}
+      pdfBusy={printActions.busy}
+      onPageSetup={canEdit ? () => setLayoutDialogOpen(true) : undefined}
+      onVersionHistory={canEdit ? () => void openHistory() : undefined}
+      busy={busy}
+    />
+  );
+
+  // Ctrl/⌘+S saves now; Ctrl/⌘+P prints this layout (not the app chrome).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+      const key = e.key.toLowerCase();
+      if (key === "s") {
+        e.preventDefault();
+        if (canEdit) void autosave.saveNow();
+      } else if (key === "p") {
+        e.preventDefault();
+        void printActions.print();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [autosave, canEdit, printActions]);
 
   return (
     <div className={`doc-root${painterArmed ? " tp-painter-armed" : ""}`} onKeyDownCapture={handleKeyDownCapture}>
       <DocumentHeader
         title={title}
         onTitleChange={setTitle}
-        pageCount={pages.length || 1}
-        zoom={zoom}
-        onZoomChange={setZoom}
-        onImportClick={handleImportClick}
-        onExportClick={handleExportClick}
-        onSaveClick={() => void autosave.saveNow()}
         onBackClick={() => void handleBack()}
-        onLayoutClick={() => setLayoutDialogOpen(true)}
-        layout={layout}
         autosaveStatus={autosave.status}
         lastSavedAt={autosave.lastSavedAt}
-        busy={busy}
         readOnly={!canEdit}
         accessLabel={canEdit ? null : canComment ? "Comment only" : "View only"}
         present={present}
         onShareClick={() => setShareOpen(true)}
-        extra={
-          <>
-            {canComment && (
-              <button
-                type="button"
-                className="doc-btn"
-                // Keep the document selection: don't take focus on press.
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={startComment}
-                title="Comment on the selected text (Ctrl/⌘+Alt+M)"
-              >
-                + Comment
-              </button>
-            )}
-            <button
-              type="button"
-              className={`doc-btn${comments.open ? " is-active" : ""}`}
-              aria-pressed={comments.open}
-              onClick={comments.toggle}
-            >
-              Comments
-            </button>
-            {canEdit && (
-              <button type="button" className="doc-btn" onClick={() => void openHistory()}>
-                Version history
-              </button>
-            )}
-            <NotificationsBell
-              onNavigate={(docId, threadId) =>
-                navigate({ to: "/documents/$documentId", params: { documentId: docId }, search: { thread: threadId } })
-              }
-            />
-          </>
+        commentsOpen={comments.open}
+        onToggleComments={comments.toggle}
+        onAddComment={canComment ? startComment : undefined}
+        onHistoryClick={canEdit ? () => void openHistory() : undefined}
+        notifications={
+          <NotificationsBell
+            onNavigate={(docId, threadId) =>
+              navigate({ to: "/documents/$documentId", params: { documentId: docId }, search: { thread: threadId } })
+            }
+          />
         }
-        onPrintClick={() => void printActions.print()}
-        onDownloadPdfClick={() => void printActions.downloadPdf()}
-        pdfAvailable={printActions.pdfAvailable}
-        pdfBusy={printActions.busy}
       />
 
       {autosave.status === "conflict" && (
@@ -874,7 +890,9 @@ function EditorWorkspace({ doc, onReload }: { doc: FullDocument; onReload: () =>
         onChange={handleFileSelected}
       />
 
-      {canEdit && <EditorRibbon
+      {canEdit ? <EditorRibbon
+        leading={fileMenu}
+        styles={styles}
         commands={commands}
         layout={layout}
         onLayoutChange={handleLayoutPatch}
@@ -896,7 +914,7 @@ function EditorWorkspace({ doc, onReload }: { doc: FullDocument; onReload: () =>
         onCloseHeaderFooter={() => setEditingHF(null)}
         onInsertField={insertField}
         onInsertFootnote={() => void insertFootnote()}
-      />}
+      /> : <div className="dh-menubar">{fileMenu}</div>}
 
       <div className="doc-body">
         <ThumbnailsSidebar
@@ -959,7 +977,14 @@ function EditorWorkspace({ doc, onReload }: { doc: FullDocument; onReload: () =>
       </div>
 
       {showStatusBar && (
-        <StatusBar root={docRootRef.current} version={version} page={activePage} pageCount={pages.length || 1} />
+        <StatusBar
+          root={docRootRef.current}
+          version={version}
+          page={activePage}
+          pageCount={pages.length || 1}
+          zoom={zoom}
+          onZoomChange={setZoom}
+        />
       )}
 
       <LinkDialog

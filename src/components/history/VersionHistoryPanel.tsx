@@ -1,3 +1,5 @@
+import { ArrowLeft, Tag } from "lucide-react";
+import "../ui/dialog.css";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -228,16 +230,19 @@ export function VersionHistoryPanel({
         onKeyDown={onKeyDown}
       >
         <header className="tp-history-bar">
-          <button type="button" className="tp-cicon" aria-label="Close version history" onClick={onClose}>
-            ←
+          <button type="button" className="tp-cicon tp-history-back" aria-label="Close version history" title="Back to document" onClick={onClose}>
+            <ArrowLeft size={18} strokeWidth={1.75} aria-hidden />
           </button>
-          <h2 id={titleId} className="tp-history-title">
-            {selected === CURRENT
-              ? "Current version"
-              : selectedSummary
-                ? versionTitle(selectedSummary)
-                : "Version history"}
-          </h2>
+          <div className="tp-history-heading">
+            <span className="tp-history-eyebrow" aria-hidden>Version history</span>
+            <h2 id={titleId} className="tp-history-title">
+              {selected === CURRENT
+                ? "Current version"
+                : selectedSummary
+                  ? versionTitle(selectedSummary)
+                  : "Version history"}
+            </h2>
+          </div>
           {selected !== CURRENT && canView && (
             <>
               <label className="tp-history-switch">
@@ -260,7 +265,7 @@ export function VersionHistoryPanel({
               {canEdit && (
                 <button
                   type="button"
-                  className="tp-cbtn tp-cbtn--primary tp-history-restore"
+                  className="tp-btn tp-btn--primary tp-history-restore"
                   disabled={!version.data || restoreMut.isPending}
                   onClick={() => setConfirming(true)}
                 >
@@ -306,12 +311,12 @@ export function VersionHistoryPanel({
                       />
                     </label>
                     <div className="tp-history-name-actions">
-                      <button type="button" className="tp-cbtn" onClick={() => setNaming(false)}>
+                      <button type="button" className="tp-btn tp-btn--secondary" onClick={() => setNaming(false)}>
                         Cancel
                       </button>
                       <button
                         type="submit"
-                        className="tp-cbtn tp-cbtn--primary"
+                        className="tp-btn tp-btn--primary"
                         disabled={!name.trim() || nameMut.isPending}
                       >
                         {nameMut.isPending ? "Saving…" : "Save"}
@@ -319,7 +324,8 @@ export function VersionHistoryPanel({
                     </div>
                   </form>
                 ) : (
-                  <button type="button" className="tp-cbtn tp-history-name-btn" onClick={() => setNaming(true)}>
+                  <button type="button" className="tp-btn tp-btn--secondary tp-history-name-btn" onClick={() => setNaming(true)}>
+                    <Tag size={14} strokeWidth={1.75} aria-hidden />
                     Name current version
                   </button>
                 )}
@@ -400,12 +406,12 @@ export function VersionHistoryPanel({
                 The current document is saved as a version first, so you can switch back from history.
               </p>
               <div className="tp-history-confirm-actions">
-                <button type="button" className="tp-cbtn" onClick={() => setConfirming(false)} autoFocus>
+                <button type="button" className="tp-btn tp-btn--secondary" onClick={() => setConfirming(false)} autoFocus>
                   Cancel
                 </button>
                 <button
                   type="button"
-                  className="tp-cbtn tp-cbtn--primary"
+                  className="tp-btn tp-btn--primary"
                   disabled={restoreMut.isPending}
                   onClick={() => restoreMut.mutate(selectedSummary.id)}
                 >

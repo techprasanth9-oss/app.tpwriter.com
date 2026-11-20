@@ -59,7 +59,7 @@
   }
 }
 
-/* ── Dialog ─────────────────────────────────────────────────────────── */
+/* ── Dialog (matches components/ui/dialog.css) ─────────────────────── */
 
 .tp-chart-dialog__backdrop {
   position: fixed;
@@ -68,28 +68,36 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 16px;
-  background: rgba(31, 35, 40, 0.45);
+  padding: 32px 16px;
+  background: rgba(15, 23, 42, 0.42);
+  backdrop-filter: blur(3px);
+  animation: tp-chart-fade 140ms ease-out;
 }
+@keyframes tp-chart-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes tp-chart-in { from { opacity: 0; transform: translateY(8px) scale(0.98); } to { opacity: 1; transform: none; } }
 
 .tp-chart-dialog {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 14px;
   width: min(760px, 100%);
-  max-height: calc(100vh - 32px);
-  padding: 18px 20px;
-  border-radius: 8px;
+  max-height: calc(100vh - 64px);
+  padding: 22px 24px 18px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 14px;
   background: #fff;
-  color: #1f2328;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
-  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  color: var(--tp-ink, #0f172a);
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.22), 0 4px 12px rgba(15, 23, 42, 0.08);
+  font: 14px/1.45 var(--tp-font-sans, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif);
+  animation: tp-chart-in 180ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+@media (prefers-reduced-motion: reduce) {
+  .tp-chart-dialog__backdrop, .tp-chart-dialog { animation: none; }
 }
 
 .tp-chart-dialog__heading {
   margin: 0;
-  font-size: 16px;
-  font-weight: 600;
+  font: 600 18px/1.3 var(--tp-font-serif, Georgia, serif);
 }
 
 .tp-chart-dialog__meta {
@@ -101,8 +109,9 @@
 .tp-chart-dialog__field {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  color: #57606a;
+  gap: 6px;
+  color: var(--tp-ink, #0f172a);
+  font-size: 12.5px;
   font-weight: 600;
 }
 
@@ -113,20 +122,31 @@
 .tp-chart-dialog input,
 .tp-chart-dialog select {
   box-sizing: border-box;
-  padding: 4px 6px;
-  border: 1px solid #d0d7de;
-  border-radius: 4px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--tp-rule-strong, #d6cfbb);
+  border-radius: 8px;
   background: #fff;
-  color: #1f2328;
+  color: var(--tp-ink, #0f172a);
   font: inherit;
   font-weight: 400;
+  transition: border-color 120ms, box-shadow 120ms;
+}
+.tp-chart-dialog select {
+  appearance: none;
+  padding-right: 32px;
+  background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2378716c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 10px center;
+}
+.tp-chart-dialog input:focus,
+.tp-chart-dialog select:focus {
+  outline: none;
+  border-color: var(--tp-accent, #c2410c);
+  box-shadow: 0 0 0 3px rgba(194, 65, 12, 0.14);
 }
 
-.tp-chart-dialog input:focus-visible,
-.tp-chart-dialog select:focus-visible,
 .tp-chart-dialog button:focus-visible {
-  outline: 2px solid #0969da;
-  outline-offset: 1px;
+  outline: 2px solid var(--tp-accent, #c2410c);
+  outline-offset: 2px;
 }
 
 .tp-chart-dialog__tools {
@@ -135,14 +155,20 @@
 }
 
 .tp-chart-dialog button {
-  padding: 4px 10px;
-  border: 1px solid #d0d7de;
-  border-radius: 4px;
-  background: #f6f8fa;
-  color: #1f2328;
-  font: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--tp-rule-strong, #d6cfbb);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--tp-ink, #0f172a);
+  font: 500 13px/1 inherit;
   cursor: pointer;
+  transition: background 120ms, border-color 120ms;
 }
+.tp-chart-dialog button:hover:not(:disabled) { background: var(--tp-cream, #f5f1e8); }
 
 .tp-chart-dialog button:disabled {
   opacity: 0.45;
@@ -152,8 +178,8 @@
 .tp-chart-dialog__grid-wrap {
   overflow: auto;
   min-height: 120px;
-  border: 1px solid #d0d7de;
-  border-radius: 4px;
+  border: 1px solid var(--tp-rule, #e7e2d4);
+  border-radius: 10px;
 }
 
 .tp-chart-dialog__grid {
@@ -163,62 +189,81 @@
 
 .tp-chart-dialog__grid th,
 .tp-chart-dialog__grid td {
-  padding: 3px 4px;
-  border-bottom: 1px solid #eaeef2;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--tp-rule, #e7e2d4);
   text-align: left;
   white-space: nowrap;
 }
+.tp-chart-dialog__grid tbody tr:last-child td { border-bottom: 0; }
 
 .tp-chart-dialog__grid thead th {
   position: sticky;
   top: 0;
-  background: #f6f8fa;
+  background: var(--tp-cream, #f5f1e8);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--tp-slate, #475569);
   z-index: 1;
 }
 
 .tp-chart-dialog__grid input {
   width: 100%;
   min-width: 80px;
+  height: 32px;
 }
 
 .tp-chart-dialog__value {
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .tp-chart-dialog__swatch {
   display: inline-block;
   width: 10px;
   height: 10px;
-  margin-right: 4px;
-  border-radius: 2px;
+  margin-right: 6px;
+  border-radius: 3px;
   vertical-align: middle;
 }
 
 .tp-chart-dialog__grid th input {
-  width: calc(100% - 44px);
+  width: calc(100% - 48px);
 }
 
 .tp-chart-dialog__remove-series,
 .tp-chart-dialog__remove-row {
-  padding: 0 6px !important;
-  margin-left: 2px;
-  line-height: 1.4;
+  width: 28px;
+  height: 28px !important;
+  padding: 0 !important;
+  margin-left: 4px;
+  border-color: transparent !important;
+  background: transparent !important;
+  color: var(--tp-mute, #78716c) !important;
 }
+.tp-chart-dialog__remove-series:hover:not(:disabled),
+.tp-chart-dialog__remove-row:hover:not(:disabled) { background: #fee2e2 !important; color: #b91c1c !important; }
 
 .tp-chart-dialog__status {
   margin: 0;
-  color: #57606a;
+  font-size: 12.5px;
+  color: var(--tp-slate, #475569);
 }
 
 .tp-chart-dialog__footer {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  margin: 4px -24px -18px;
+  padding: 14px 24px 16px;
+  border-top: 1px solid var(--tp-rule, #e7e2d4);
+  background: #fcfbf8;
+  border-radius: 0 0 14px 14px;
 }
 
 .tp-chart-dialog .tp-chart-dialog__save {
-  border-color: #1f883d;
-  background: #1f883d;
-  color: #fff;
-  font-weight: 600;
+  border-color: var(--tp-accent, #c2410c);
+  background: var(--tp-accent, #c2410c);
+  color: #fff7ed;
+  box-shadow: 0 1px 2px rgba(124, 45, 18, 0.25);
 }
+.tp-chart-dialog .tp-chart-dialog__save:hover:not(:disabled) { background: var(--tp-accent-hover, #9a3412); }

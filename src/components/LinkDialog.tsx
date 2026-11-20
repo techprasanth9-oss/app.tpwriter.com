@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { normalizeUrl } from "~/lib/editor/commands";
 import { isSafeLinkUrl } from "~/lib/editor/safeUrl";
+import { Link2, Unlink } from "lucide-react";
+import { Dialog, DialogButton, Field } from "./ui/Dialog";
 
 interface Props {
   open: boolean;
@@ -43,66 +45,72 @@ export function LinkDialog({ open, initialUrl, selectedText, onApply, onRemove, 
   };
 
   return (
-    <div className="layout-backdrop" onMouseDown={onClose}>
-      <div
-        className="layout-dialog tp-small-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-label={initialUrl ? "Edit link" : "Insert link"}
-        onMouseDown={(e) => e.stopPropagation()}
+    <Dialog
+      open
+      size="sm"
+      title={initialUrl ? "Edit link" : "Insert link"}
+      description={selectedText ? <>Link “{selectedText.length > 60 ? `${selectedText.slice(0, 60)}…` : selectedText}”</> : undefined}
+      onClose={onClose}
+      initialFocus={() => urlRef.current}
+      footerStart={
+        initialUrl ? (
+          <DialogButton
+            variant="ghost"
+            onClick={() => {
+              onRemove();
+              onClose();
+            }}
+          >
+            <Unlink size={14} strokeWidth={1.75} aria-hidden />
+            Remove link
+          </DialogButton>
+        ) : undefined
+      }
+      footer={
+        <>
+          <DialogButton onClick={onClose}>Cancel</DialogButton>
+          <DialogButton variant="primary" onClick={() => void submit()} disabled={!url.trim()}>
+            Apply
+          </DialogButton>
+        </>
+      }
+    >
+      <form
+        className="tp-stack"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
       >
-        <header className="layout-header">
-          <h2 className="layout-title">{initialUrl ? "Edit link" : "Insert link"}</h2>
-          <button type="button" className="layout-close" onClick={onClose} aria-label="Close">×</button>
-        </header>
-        <form
-          className="layout-body"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void submit();
-          }}
+        {askText && (
+          <Field label="Text to display">
+            <input className="tp-input" value={text} onChange={(e) => setText(e.target.value)} placeholder="Link text" />
+          </Field>
+        )}
+        <Field
+          label="Address"
+          error={error}
+          hint={!error ? "A web page, an email address or a phone number." : undefined}
         >
-          {askText && (
-            <label className="tp-form-field">
-              <span className="layout-label">Text to display</span>
-              <input className="layout-select" value={text} onChange={(e) => setText(e.target.value)} placeholder="Link text" />
-            </label>
-          )}
-          <label className="tp-form-field">
-            <span className="layout-label">Address</span>
+          <span className="tp-input-group tp-input-group--icon">
+            <Link2 size={16} strokeWidth={1.75} aria-hidden className="tp-input-icon" />
             <input
               ref={urlRef}
-              className="layout-select"
+              className="tp-input"
               value={url}
-              onChange={(e) => setUrl(e.target.value)}
+              onChange={(e) => {
+                setUrl(e.target.value);
+                setError(null);
+              }}
               placeholder="https://example.com or name@example.com"
               aria-invalid={error ? true : undefined}
               autoComplete="url"
             />
-          </label>
-          {error && <div className="layout-error">{error}</div>}
-          <button type="submit" hidden />
-        </form>
-        <footer className="layout-footer">
-          {initialUrl && (
-            <button
-              type="button"
-              className="doc-btn tp-btn-left"
-              onClick={() => {
-                onRemove();
-                onClose();
-              }}
-            >
-              Remove link
-            </button>
-          )}
-          <button type="button" className="doc-btn" onClick={onClose}>Cancel</button>
-          <button type="button" className="doc-btn doc-btn-primary" onClick={() => void submit()} disabled={!url.trim()}>
-            Apply
-          </button>
-        </footer>
-      </div>
-    </div>
+          </span>
+        </Field>
+        <button type="submit" hidden />
+      </form>
+    </Dialog>
   );
 }
 

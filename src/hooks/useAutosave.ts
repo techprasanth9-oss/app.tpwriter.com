@@ -104,6 +104,7 @@ export function useAutosave({
   const callbacksRef = useRef(callbacks);
   callbacksRef.current = callbacks;
   const conflictStreakRef = useRef(0);
+  const everSavedRef = useRef(false);
 
   /**
    * Merge everything saved elsewhere since our revision into the editor
@@ -157,7 +158,9 @@ export function useAutosave({
       if (!blocks) return;
       const diff = diffContent(savedRef.current, blocks);
       if (isEmptyDiff(diff)) {
-        setStatus((s) => (s === "pending" || s === "saving" ? "saved" : s));
+        // Nothing actually changed (e.g. a chart re-rendered): back to how
+        // it was — don't announce a save that didn't happen.
+        setStatus((s) => (s === "pending" || s === "saving" ? (everSavedRef.current ? "saved" : "idle") : s));
         if (!dirtyRef.current) await deleteDraft(documentId);
         return;
       }
@@ -189,6 +192,7 @@ export function useAutosave({
       // claim "Saved" until they're in too.
       setStatus(dirtyRef.current ? "pending" : "saved");
       setLastSavedAt(new Date());
+      everSavedRef.current = true;
     } catch (err) {
       if (err instanceof ApiError && err.status === 409 && conflictStreakRef.current < 3) {
         // Someone changed the same blocks (or the block order): merge their

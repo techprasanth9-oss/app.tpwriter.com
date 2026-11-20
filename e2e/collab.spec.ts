@@ -69,7 +69,10 @@ test("a viewer can read but not edit, and sees updates", async ({ page, request,
   await expect(viewer.locator(".doc-access-badge")).toHaveText("View only");
   await expect(viewer.locator(".rb")).toHaveCount(0);
   await expect(viewer.locator(".ce-paragraph[contenteditable=true]")).toHaveCount(0);
-  await expect(viewer.getByRole("button", { name: "Import DOCX" })).toHaveCount(0);
+  await viewer.getByRole("button", { name: "File" }).click();
+  await expect(viewer.getByRole("menuitem", { name: /Download as Word/ })).toBeVisible();
+  await expect(viewer.getByRole("menuitem", { name: /Import Word document/ })).toHaveCount(0);
+  await viewer.keyboard.press("Escape");
 
   // Owner edits; the viewer's page catches up.
   await openDocument(page, id);

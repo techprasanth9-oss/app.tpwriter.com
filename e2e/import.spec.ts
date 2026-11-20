@@ -5,10 +5,12 @@ import { createDocument, openDocument, settle, textOutsidePages } from "./helper
 const fixture = (name: string) => path.resolve("fixtures/docx", name);
 
 async function importFile(page: Page, file: string) {
-  page.once("dialog", (d) => void d.accept());
   const chooser = page.waitForEvent("filechooser");
-  await page.getByRole("button", { name: "Import DOCX" }).click();
+  await page.getByRole("button", { name: "File" }).click();
+  await page.getByRole("menuitem", { name: /Import Word document/ }).click();
   await (await chooser).setFiles(file);
+  const confirm = page.getByRole("alertdialog", { name: /Replace this document's content/ });
+  await confirm.getByRole("button", { name: "Replace content" }).click();
 }
 
 test("importing a real report brings over sections, headers, TOC, footnotes and images", async ({ page, request }) => {
@@ -64,14 +66,13 @@ test("import notes are shown and can be dismissed", async ({ page, request }) =>
 test("a file that isn't a DOCX is refused and the document is untouched", async ({ page, request }) => {
   const id = await createDocument(request, "Bad import", [{ id: "x", type: "paragraph", data: { text: "Keep me" } }]);
   await openDocument(page, id);
-  let message = "";
-  page.once("dialog", (d) => {
-    message = d.message();
-    void d.dismiss();
-  });
   const chooser = page.waitForEvent("filechooser");
-  await page.getByRole("button", { name: "Import DOCX" }).click();
+  await page.getByRole("button", { name: "File" }).click();
+  await page.getByRole("menuitem", { name: /Import Word document/ }).click();
   await (await chooser).setFiles({ name: "fake.docx", mimeType: "application/octet-stream", buffer: Buffer.from("not a zip at all") });
-  await expect.poll(() => message).toMatch(/Couldn't import/);
+  const alert = page.getByRole("alertdialog", { name: /Couldn't import/ });
+  await expect(alert).toBeVisible();
+  await alert.getByRole("button", { name: "OK" }).click();
+  await expect(alert).toHaveCount(0);
   await expect(page.locator(".ce-paragraph")).toHaveText("Keep me");
 });

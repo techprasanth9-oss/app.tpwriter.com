@@ -141,8 +141,8 @@ test("Print… builds the print DOM, calls window.print and cleans up", async ({
       window.dispatchEvent(new Event("afterprint"));
     };
   });
-  await page.getByRole("button", { name: "Print / PDF" }).click();
-  await page.getByRole("menuitem", { name: "Print…" }).click();
+  await page.getByRole("button", { name: "File" }).click();
+  await page.getByRole("menuitem", { name: /Print…/ }).click();
   await page.waitForFunction(() => (window as unknown as { __printed?: number }).__printed !== undefined);
   expect(await page.evaluate(() => (window as unknown as { __printed: number }).__printed)).toBe(sheets.length);
   await expect(page.locator(".tp-print-root")).toHaveCount(0);
@@ -156,9 +156,9 @@ test("Download PDF renders on the server", async ({ page, request }) => {
   await openDocument(page, id);
   const n = (await editorSheets(page)).length;
 
-  await page.getByRole("button", { name: "Print / PDF" }).click();
+  await page.getByRole("button", { name: "File" }).click();
   const downloadPromise = page.waitForEvent("download", { timeout: 60_000 });
-  await page.getByRole("menuitem", { name: "Download PDF" }).click();
+  await page.getByRole("menuitem", { name: /Download as PDF/ }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe("Print test.pdf");
   const pdf = inspectPdf(fs.readFileSync((await download.path())!));

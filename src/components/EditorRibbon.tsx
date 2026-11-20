@@ -1,12 +1,84 @@
-import { useEffect, useState } from "react";
+import { promptDialog } from "./ui/dialogs";
+import { useEffect, useState, type ReactNode } from "react";
+import {
+  AArrowDown,
+  AArrowUp,
+  AlignCenter,
+  AlignJustify,
+  AlignLeft,
+  AlignRight,
+  ArrowDownToLine,
+  ArrowUpToLine,
+  Bold,
+  CalendarDays,
+  Copy,
+  Scissors,
+  CaseSensitive,
+  ChartColumn,
+  Columns2,
+  Files,
+  FileText,
+  Frame,
+  Hash,
+  Heading,
+  Highlighter,
+  Image as ImageIcon,
+  IndentDecrease,
+  IndentIncrease,
+  Italic,
+  Link as LinkIcon,
+  List,
+  ListChecks,
+  ListOrdered,
+  Minus,
+  PaintBucket,
+  Paintbrush,
+  PanelBottom,
+  PanelTop,
+  Redo2,
+  RectangleVertical,
+  RemoveFormatting,
+  Replace,
+  Scan,
+  Search,
+  Settings2,
+  Sigma,
+  SquareDashed,
+  SquareSplitVertical,
+  Stamp,
+  Strikethrough,
+  Subscript,
+  Superscript,
+  Table,
+  TableOfContents,
+  TextCursorInput,
+  Underline,
+  Undo2,
+  UnfoldVertical,
+  X,
+  ZoomIn,
+  ZoomOut,
+  type LucideIcon,
+} from "lucide-react";
 import type { PageLayout, PaperSize } from "~/lib/api/documents";
 import type { BlockState, EditorCommands, InlineState, ListCounter } from "~/lib/editor/commands";
 import { FONT_OPTIONS, FONT_SIZES_PT } from "~/lib/editor/format/inlineStyle";
 import type { Alignment } from "~/lib/editor/format/paragraphFormat";
-import { DEFAULT_STYLES, type StyleId } from "~/lib/editor/styles/namedStyles";
+import type { StyleId, StyleSheet } from "~/lib/editor/styles/namedStyles";
+import { StyleGallery } from "./ribbon/StyleGallery";
 import type { FieldKind, PageSetup } from "~/lib/editor/pageSetup";
 import type { HeaderFooterTarget } from "./PageChrome";
-import { ColorMenu, Dropdown, MenuItem, RibbonButton, RibbonGroup } from "./ribbon/controls";
+import {
+  ColorMenu,
+  Dropdown,
+  ICON_SM,
+  MenuItem,
+  RibbonButton,
+  RibbonGroup,
+  RibbonPanel,
+  RibbonStack,
+  SplitGroup,
+} from "./ribbon/controls";
 import "./ribbon/ribbon.css";
 
 /**
@@ -18,6 +90,8 @@ type Tab = "home" | "insert" | "layout" | "references" | "view" | "headerFooter"
 
 interface Props {
   commands: EditorCommands | null;
+  /** Resolved named styles (live previews in the styles gallery). */
+  styles: StyleSheet;
   layout: PageLayout;
   onLayoutChange: (patch: Partial<PageLayout>) => void;
   onOpenPageSetup: () => void;
@@ -39,6 +113,8 @@ interface Props {
   onCloseHeaderFooter: () => void;
   onInsertField: (kind: FieldKind) => void;
   onInsertFootnote: () => void;
+  /** Rendered at the start of the tab row, before "Home" (e.g. a File menu button; style it with `.rb-file`). */
+  leading?: ReactNode;
 }
 
 const WATERMARKS = ["CONFIDENTIAL", "DRAFT", "DO NOT COPY", "SAMPLE", "URGENT"];
@@ -51,13 +127,12 @@ const BORDERS: Array<{ label: string; value: PageSetup["pageBorder"] }> = [
   { label: "Dashed", value: { style: "dashed", width: 1, color: "#475569" } },
 ];
 
-const STYLE_OPTIONS: StyleId[] = ["normal", "title", "subtitle", "heading1", "heading2", "heading3", "heading4", "quote"];
 
-const ALIGN: Array<{ value: Alignment; label: string; glyph: string; key: string }> = [
-  { value: "left", label: "Align left", glyph: "⇤", key: "L" },
-  { value: "center", label: "Center", glyph: "⇔", key: "E" },
-  { value: "right", label: "Align right", glyph: "⇥", key: "R" },
-  { value: "justify", label: "Justify", glyph: "☰", key: "J" },
+const ALIGN: Array<{ value: Alignment; label: string; icon: LucideIcon; key: string }> = [
+  { value: "left", label: "Align left", icon: AlignLeft, key: "L" },
+  { value: "center", label: "Center", icon: AlignCenter, key: "E" },
+  { value: "right", label: "Align right", icon: AlignRight, key: "R" },
+  { value: "justify", label: "Justify", icon: AlignJustify, key: "J" },
 ];
 
 const LINE_SPACING = [1, 1.15, 1.5, 2, 2.5, 3];
@@ -157,6 +232,7 @@ export function EditorRibbon(props: Props) {
   return (
     <div className="rb" aria-label="Ribbon">
       <div className="rb-tabs" role="tablist" aria-label="Ribbon tabs">
+        {props.leading}
         {([
           ["home", "Home"],
           ["insert", "Insert"],
@@ -179,147 +255,173 @@ export function EditorRibbon(props: Props) {
         ))}
       </div>
 
-      <div className="rb-panel" role="tabpanel" aria-label={`${tab} tab`}>
+      <RibbonPanel label={`${tab} tab`}>
         {tab === "home" && (
           <>
             <RibbonGroup label="History">
-              <RibbonButton label={`Undo (${MOD}Z)`} onClick={run((c) => c.undo())} disabled={off}>↶</RibbonButton>
-              <RibbonButton label={`Redo (${MOD}Shift+Z)`} onClick={run((c) => c.redo())} disabled={off}>↷</RibbonButton>
+              <RibbonStack>
+                <RibbonButton label={`Undo (${MOD}Z)`} icon={Undo2} onClick={run((c) => c.undo())} disabled={off} />
+                <RibbonButton label={`Redo (${MOD}Shift+Z)`} icon={Redo2} onClick={run((c) => c.redo())} disabled={off} />
+              </RibbonStack>
+            </RibbonGroup>
+
+            <RibbonGroup label="Clipboard">
+              <RibbonButton
+                label={`Format painter (${MOD}Shift+C / ${MOD}Shift+V)`}
+                icon={Paintbrush}
+                text="Format painter"
+                large
+                active={props.painterArmed}
+                onClick={props.onTogglePainter}
+                disabled={off}
+              />
+              <RibbonStack>
+                <RibbonButton label={`Cut (${MOD}X)`} icon={Scissors} text="Cut" onClick={() => document.execCommand("cut")} disabled={off} />
+                <RibbonButton label={`Copy (${MOD}C)`} icon={Copy} text="Copy" onClick={() => document.execCommand("copy")} disabled={off} />
+              </RibbonStack>
             </RibbonGroup>
 
             <RibbonGroup label="Font">
-              <div className="rb-row">
-                <select
-                  className="rb-select rb-select-font"
-                  aria-label="Font"
-                  disabled={off}
-                  value={inline.font ?? ""}
-                  onChange={(e) => {
-                    const font = FONT_OPTIONS.find((f) => f.label === e.target.value);
-                    void run((c) => c.setFontFamily(font?.css ?? null))();
-                  }}
-                >
-                  {inline.font === null && <option value="">(mixed)</option>}
-                  {FONT_OPTIONS.map((f) => (
-                    <option key={f.label} value={f.label} style={{ fontFamily: f.css }}>
-                      {f.label}
-                    </option>
-                  ))}
-                </select>
-                <FontSizeBox
-                  value={inline.sizePt}
-                  disabled={off}
-                  onCommit={(pt) => void run((c) => c.setFontSize(pt))()}
-                />
-                <RibbonButton label={`Grow font (${MOD}Shift+>)`} onClick={run((c) => c.stepFontSize(1))} disabled={off}>A<sup>+</sup></RibbonButton>
-                <RibbonButton label={`Shrink font (${MOD}Shift+<)`} onClick={run((c) => c.stepFontSize(-1))} disabled={off}>A<sup>−</sup></RibbonButton>
-              </div>
-              <div className="rb-row">
-                <RibbonButton label={`Bold (${MOD}B)`} active={inline.bold} onClick={run((c) => c.inline("bold"))} disabled={off} style={{ fontWeight: 700 }}>B</RibbonButton>
-                <RibbonButton label={`Italic (${MOD}I)`} active={inline.italic} onClick={run((c) => c.inline("italic"))} disabled={off} style={{ fontStyle: "italic" }}>I</RibbonButton>
-                <RibbonButton label={`Underline (${MOD}U)`} active={inline.underline} onClick={run((c) => c.inline("underline"))} disabled={off} style={{ textDecoration: "underline" }}>U</RibbonButton>
-                <RibbonButton label={`Strikethrough (${MOD}Shift+X)`} active={inline.strike} onClick={run((c) => c.inline("strikeThrough"))} disabled={off} style={{ textDecoration: "line-through" }}>S</RibbonButton>
-                <RibbonButton label={`Subscript (${MOD}=)`} active={inline.subscript} onClick={run((c) => c.inline("subscript"))} disabled={off}>x<sub>2</sub></RibbonButton>
-                <RibbonButton label={`Superscript (${MOD}Shift+=)`} active={inline.superscript} onClick={run((c) => c.inline("superscript"))} disabled={off}>x<sup>2</sup></RibbonButton>
-                <ColorMenu label="Text colour" noneLabel="Automatic" glyph="A" initial="#c2410c" disabled={off} onPick={(color) => void run((c) => c.setTextColor(color))()} />
-                <ColorMenu label="Highlight" noneLabel="No highlight" glyph="✎" initial="#fef08a" disabled={off} onPick={(color) => void run((c) => c.setHighlight(color))()} />
-                <Dropdown label="Change case" trigger="Aa" disabled={off}>
-                  {(close) => (
-                    <>
-                      {([
-                        ["sentence", "Sentence case."],
-                        ["lower", "lowercase"],
-                        ["upper", "UPPERCASE"],
-                        ["title", "Capitalize Each Word"],
-                        ["toggle", "tOGGLE cASE"],
-                      ] as const).map(([mode, text]) => (
-                        <MenuItem key={mode} onSelect={() => { close(); void run((c) => c.changeCase(mode))(); }}>{text}</MenuItem>
-                      ))}
-                    </>
-                  )}
-                </Dropdown>
-                <RibbonButton label={`Clear formatting (${MOD}Space)`} onClick={run((c) => c.clearFormatting())} disabled={off}>T̸</RibbonButton>
-              </div>
+              <RibbonStack>
+                <div className="rb-row">
+                  <select
+                    className="rb-select rb-select-font"
+                    aria-label="Font"
+                    title="Font"
+                    disabled={off}
+                    value={inline.font ?? ""}
+                    onChange={(e) => {
+                      const font = FONT_OPTIONS.find((f) => f.label === e.target.value);
+                      void run((c) => c.setFontFamily(font?.css ?? null))();
+                    }}
+                  >
+                    {inline.font === null && <option value="">(mixed)</option>}
+                    {FONT_OPTIONS.map((f) => (
+                      <option key={f.label} value={f.label} style={{ fontFamily: f.css }}>
+                        {f.label}
+                      </option>
+                    ))}
+                  </select>
+                  <FontSizeBox
+                    value={inline.sizePt}
+                    disabled={off}
+                    onCommit={(pt) => void run((c) => c.setFontSize(pt))()}
+                  />
+                  <RibbonButton label={`Grow font (${MOD}Shift+>)`} icon={AArrowUp} onClick={run((c) => c.stepFontSize(1))} disabled={off} />
+                  <RibbonButton label={`Shrink font (${MOD}Shift+<)`} icon={AArrowDown} onClick={run((c) => c.stepFontSize(-1))} disabled={off} />
+                  <Dropdown label="Change case" icon={CaseSensitive} disabled={off}>
+                    {(close) => (
+                      <>
+                        {([
+                          ["sentence", "Sentence case."],
+                          ["lower", "lowercase"],
+                          ["upper", "UPPERCASE"],
+                          ["title", "Capitalize Each Word"],
+                          ["toggle", "tOGGLE cASE"],
+                        ] as const).map(([mode, text]) => (
+                          <MenuItem key={mode} onSelect={() => { close(); void run((c) => c.changeCase(mode))(); }}>{text}</MenuItem>
+                        ))}
+                      </>
+                    )}
+                  </Dropdown>
+                  <RibbonButton label={`Clear formatting (${MOD}Space)`} icon={RemoveFormatting} onClick={run((c) => c.clearFormatting())} disabled={off} />
+                </div>
+                <div className="rb-row">
+                  <RibbonButton label={`Bold (${MOD}B)`} icon={Bold} active={inline.bold} onClick={run((c) => c.inline("bold"))} disabled={off} />
+                  <RibbonButton label={`Italic (${MOD}I)`} icon={Italic} active={inline.italic} onClick={run((c) => c.inline("italic"))} disabled={off} />
+                  <RibbonButton label={`Underline (${MOD}U)`} icon={Underline} active={inline.underline} onClick={run((c) => c.inline("underline"))} disabled={off} />
+                  <RibbonButton label={`Strikethrough (${MOD}Shift+X)`} icon={Strikethrough} active={inline.strike} onClick={run((c) => c.inline("strikeThrough"))} disabled={off} />
+                  <RibbonButton label={`Subscript (${MOD}=)`} icon={Subscript} active={inline.subscript} onClick={run((c) => c.inline("subscript"))} disabled={off} />
+                  <RibbonButton label={`Superscript (${MOD}Shift+=)`} icon={Superscript} active={inline.superscript} onClick={run((c) => c.inline("superscript"))} disabled={off} />
+                  <span className="rb-sep" aria-hidden />
+                  <ColorMenu label="Text colour" noneLabel="Automatic" glyph={<span className="rb-letter-a">A</span>} initial="#c2410c" disabled={off} onPick={(color) => void run((c) => c.setTextColor(color))()} />
+                  <ColorMenu label="Highlight" noneLabel="No highlight" icon={Highlighter} initial="#fef08a" disabled={off} onPick={(color) => void run((c) => c.setHighlight(color))()} />
+                </div>
+              </RibbonStack>
             </RibbonGroup>
 
             <RibbonGroup label="Paragraph">
-              <div className="rb-row">
-                <RibbonButton label={`Bulleted list (${MOD}Shift+L)`} active={block.type === "list"} onClick={run((c) => c.toggleList("unordered"))} disabled={off}>•≡</RibbonButton>
-                <RibbonButton label="Numbered list" onClick={run((c) => c.toggleList("ordered"))} disabled={off}>1≡</RibbonButton>
-                <RibbonButton label="Checklist" onClick={run((c) => c.toggleList("checklist"))} disabled={off}>☑</RibbonButton>
-                <Dropdown label="Numbering format" trigger="1.a" disabled={off}>
-                  {(close) => (
-                    <>
-                      {NUMBERING.map((n) => (
-                        <MenuItem key={n.value} onSelect={() => { close(); void run((c) => c.setListNumbering(n.value))(); }}>{n.label}</MenuItem>
-                      ))}
-                      <div className="rb-menu-sep" />
-                      <MenuItem onSelect={() => { close(); void run((c) => c.setListStart(1))(); }}>Restart numbering at 1</MenuItem>
-                      <MenuItem
-                        onSelect={() => {
-                          close();
-                          const raw = prompt("Start numbering at:", "1");
-                          const n = raw ? Number(raw) : NaN;
-                          if (Number.isFinite(n) && n >= 1) void run((c) => c.setListStart(n))();
-                        }}
-                      >
-                        Set numbering value…
-                      </MenuItem>
-                    </>
-                  )}
-                </Dropdown>
-                <RibbonButton label="Decrease indent" onClick={run((c) => c.changeIndent(-1))} disabled={off || block.indent === 0}>⇠</RibbonButton>
-                <RibbonButton label="Increase indent" onClick={run((c) => c.changeIndent(1))} disabled={off}>⇢</RibbonButton>
-              </div>
-              <div className="rb-row">
-                {ALIGN.map((a) => (
-                  <RibbonButton key={a.value} label={`${a.label} (${MOD}${a.key})`} active={block.alignment === a.value} onClick={run((c) => c.setAlignment(a.value))} disabled={off}>{a.glyph}</RibbonButton>
-                ))}
-                <Dropdown label="Line and paragraph spacing" trigger="↕" disabled={off}>
-                  {(close) => (
-                    <>
-                      {LINE_SPACING.map((v) => (
-                        <MenuItem key={v} onSelect={() => { close(); void run((c) => c.setLineHeight(v))(); }}>{v.toFixed(v % 1 ? 2 : 1).replace(/0$/, "")}</MenuItem>
-                      ))}
-                      <MenuItem onSelect={() => { close(); void run((c) => c.setLineHeight(undefined))(); }}>Style default</MenuItem>
-                      <div className="rb-menu-sep" />
-                      <MenuItem onSelect={() => { close(); void run((c) => c.setParagraphSpacing({ spaceBefore: 12 }))(); }}>Add space before paragraph</MenuItem>
-                      <MenuItem onSelect={() => { close(); void run((c) => c.setParagraphSpacing({ spaceAfter: 12 }))(); }}>Add space after paragraph</MenuItem>
-                      <MenuItem onSelect={() => { close(); void run((c) => c.setParagraphSpacing({ spaceBefore: 0, spaceAfter: 0 }))(); }}>Remove paragraph spacing</MenuItem>
-                      <MenuItem onSelect={() => { close(); void run((c) => c.setParagraphSpacing({ spaceBefore: null, spaceAfter: null }))(); }}>Style default spacing</MenuItem>
-                    </>
-                  )}
-                </Dropdown>
-              </div>
+              <RibbonStack>
+                <div className="rb-row">
+                  <RibbonButton label={`Bulleted list (${MOD}Shift+L)`} icon={List} active={block.type === "list"} onClick={run((c) => c.toggleList("unordered"))} disabled={off} />
+                  <SplitGroup>
+                    <RibbonButton label="Numbered list" icon={ListOrdered} onClick={run((c) => c.toggleList("ordered"))} disabled={off} />
+                    <Dropdown label="Numbering format" caretOnly disabled={off}>
+                      {(close) => (
+                        <>
+                          {NUMBERING.map((n) => (
+                            <MenuItem key={n.value} onSelect={() => { close(); void run((c) => c.setListNumbering(n.value))(); }}>{n.label}</MenuItem>
+                          ))}
+                          <div className="rb-menu-sep" />
+                          <MenuItem onSelect={() => { close(); void run((c) => c.setListStart(1))(); }}>Restart numbering at 1</MenuItem>
+                          <MenuItem
+                            onSelect={() => {
+                              close();
+                              void promptDialog({
+                                title: "Set numbering value",
+                                label: "Start numbering at",
+                                defaultValue: "1",
+                                inputType: "number",
+                                confirmLabel: "Set value",
+                                validate: (v) => (Number.isInteger(Number(v)) && Number(v) >= 1 ? null : "Enter a whole number, 1 or more."),
+                              }).then((raw) => {
+                                if (raw !== null) void run((c) => c.setListStart(Number(raw)))();
+                              });
+                            }}
+                          >
+                            Set numbering value…
+                          </MenuItem>
+                        </>
+                      )}
+                    </Dropdown>
+                  </SplitGroup>
+                  <RibbonButton label="Checklist" icon={ListChecks} onClick={run((c) => c.toggleList("checklist"))} disabled={off} />
+                  <span className="rb-sep" aria-hidden />
+                  <RibbonButton label="Decrease indent" icon={IndentDecrease} onClick={run((c) => c.changeIndent(-1))} disabled={off || block.indent === 0} />
+                  <RibbonButton label="Increase indent" icon={IndentIncrease} onClick={run((c) => c.changeIndent(1))} disabled={off} />
+                </div>
+                <div className="rb-row">
+                  {ALIGN.map((a) => (
+                    <RibbonButton key={a.value} label={`${a.label} (${MOD}${a.key})`} icon={a.icon} active={block.alignment === a.value} onClick={run((c) => c.setAlignment(a.value))} disabled={off} />
+                  ))}
+                  <span className="rb-sep" aria-hidden />
+                  <Dropdown label="Line and paragraph spacing" icon={UnfoldVertical} disabled={off}>
+                    {(close) => (
+                      <>
+                        {LINE_SPACING.map((v) => (
+                          <MenuItem key={v} onSelect={() => { close(); void run((c) => c.setLineHeight(v))(); }}>{v.toFixed(v % 1 ? 2 : 1).replace(/0$/, "")}</MenuItem>
+                        ))}
+                        <MenuItem onSelect={() => { close(); void run((c) => c.setLineHeight(undefined))(); }}>Style default</MenuItem>
+                        <div className="rb-menu-sep" />
+                        <MenuItem onSelect={() => { close(); void run((c) => c.setParagraphSpacing({ spaceBefore: 12 }))(); }}>Add space before paragraph</MenuItem>
+                        <MenuItem onSelect={() => { close(); void run((c) => c.setParagraphSpacing({ spaceAfter: 12 }))(); }}>Add space after paragraph</MenuItem>
+                        <MenuItem onSelect={() => { close(); void run((c) => c.setParagraphSpacing({ spaceBefore: 0, spaceAfter: 0 }))(); }}>Remove paragraph spacing</MenuItem>
+                        <MenuItem onSelect={() => { close(); void run((c) => c.setParagraphSpacing({ spaceBefore: null, spaceAfter: null }))(); }}>Style default spacing</MenuItem>
+                      </>
+                    )}
+                  </Dropdown>
+                </div>
+              </RibbonStack>
             </RibbonGroup>
 
-            <RibbonGroup label="Styles">
-              <div className="rb-row">
-                <select
-                  className="rb-select rb-select-style"
-                  aria-label="Paragraph style"
-                  disabled={off}
-                  value={block.styleId}
-                  onChange={(e) => void run((c) => c.applyStyle(e.target.value as StyleId))()}
-                >
-                  {STYLE_OPTIONS.map((id) => (
-                    <option key={id} value={id}>{DEFAULT_STYLES[id].label}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="rb-row">
-                <RibbonButton label="Modify styles…" wide onClick={props.onOpenStyles} disabled={off}>¶</RibbonButton>
-              </div>
+            <RibbonGroup
+              label="Styles"
+              launcher={{ label: "Modify styles…", onClick: props.onOpenStyles, disabled: off }}
+            >
+              <StyleGallery
+                styles={props.styles}
+                value={block.styleId as StyleId}
+                disabled={off}
+                onApply={(id) => void run((c) => c.applyStyle(id))()}
+                onModify={props.onOpenStyles}
+              />
             </RibbonGroup>
 
             <RibbonGroup label="Editing">
-              <div className="rb-row">
-                <RibbonButton label={`Find (${MOD}F)`} wide onClick={() => props.onOpenFind("find")} disabled={off}>⌕</RibbonButton>
-              </div>
-              <div className="rb-row">
-                <RibbonButton label={`Replace (${MOD}H)`} wide onClick={() => props.onOpenFind("replace")} disabled={off}>⇄</RibbonButton>
-                <RibbonButton label={`Format painter (${MOD}Shift+C / ${MOD}Shift+V)`} active={props.painterArmed} onClick={props.onTogglePainter} disabled={off}>🖌</RibbonButton>
-              </div>
+              <RibbonStack>
+                <RibbonButton label={`Find (${MOD}F)`} icon={Search} text="Find" onClick={() => props.onOpenFind("find")} disabled={off} />
+                <RibbonButton label={`Replace (${MOD}H)`} icon={Replace} text="Replace" onClick={() => props.onOpenFind("replace")} disabled={off} />
+              </RibbonStack>
             </RibbonGroup>
           </>
         )}
@@ -327,36 +429,36 @@ export function EditorRibbon(props: Props) {
         {tab === "insert" && (
           <>
             <RibbonGroup label="Tables & media">
-              <RibbonButton label="Table" wide onClick={run((c) => c.insertBlock("table"))} disabled={off}>▦</RibbonButton>
-              <RibbonButton label="Image" wide onClick={run((c) => c.insertBlock("image"))} disabled={off}>🖼</RibbonButton>
-              <RibbonButton label="Chart" wide onClick={run((c) => c.insertBlock("chart"))} disabled={off}>📊</RibbonButton>
+              <RibbonButton label="Table" icon={Table} text="Table" large onClick={run((c) => c.insertBlock("table"))} disabled={off} />
+              <RibbonButton label="Image" icon={ImageIcon} text="Image" large onClick={run((c) => c.insertBlock("image"))} disabled={off} />
+              <RibbonButton label="Chart" icon={ChartColumn} text="Chart" large onClick={run((c) => c.insertBlock("chart"))} disabled={off} />
             </RibbonGroup>
             <RibbonGroup label="Text & symbols">
-              <RibbonButton label="Text box" wide onClick={run((c) => c.insertBlock("textBox"))} disabled={off}>▢</RibbonButton>
-              <RibbonButton label="Equation" wide onClick={run((c) => c.insertBlock("equation"))} disabled={off}>∑</RibbonButton>
-              <RibbonButton label="Columns" wide onClick={run((c) => c.insertBlock("column"))} disabled={off}>▥</RibbonButton>
+              <RibbonButton label="Text box" icon={TextCursorInput} text="Text box" large onClick={run((c) => c.insertBlock("textBox"))} disabled={off} />
+              <RibbonButton label="Equation" icon={Sigma} text="Equation" large onClick={run((c) => c.insertBlock("equation"))} disabled={off} />
+              <RibbonButton label="Columns" icon={Columns2} text="Columns" large onClick={run((c) => c.insertBlock("column"))} disabled={off} />
             </RibbonGroup>
             <RibbonGroup label="Links">
-              <RibbonButton label={`Link (${MOD}K)`} wide active={inline.link !== null} onClick={props.onOpenLink} disabled={off}>🔗</RibbonButton>
+              <RibbonButton label={`Link (${MOD}K)`} icon={LinkIcon} text="Link" large active={inline.link !== null} onClick={props.onOpenLink} disabled={off} />
             </RibbonGroup>
             <RibbonGroup label="Pages">
-              <RibbonButton label={`Page break (${MOD}Enter)`} wide onClick={run((c) => c.insertPageBreak())} disabled={off}>⤓</RibbonButton>
-              <RibbonButton label="Horizontal line" wide onClick={run((c) => c.insertBlock("horizontalLine"))} disabled={off}>—</RibbonButton>
+              <RibbonButton label={`Page break (${MOD}Enter)`} icon={SquareSplitVertical} text="Page break" large onClick={run((c) => c.insertPageBreak())} disabled={off} />
+              <RibbonButton label="Horizontal line" icon={Minus} text="Horizontal line" large onClick={run((c) => c.insertBlock("horizontalLine"))} disabled={off} />
             </RibbonGroup>
             <RibbonGroup label="Header & footer">
-              <RibbonButton label="Header" wide onClick={() => props.onEditHeaderFooter("header")} disabled={off}>▔</RibbonButton>
-              <RibbonButton label="Footer" wide onClick={() => props.onEditHeaderFooter("footer")} disabled={off}>▁</RibbonButton>
+              <RibbonButton label="Header" icon={PanelTop} text="Header" large onClick={() => props.onEditHeaderFooter("header")} disabled={off} />
+              <RibbonButton label="Footer" icon={PanelBottom} text="Footer" large onClick={() => props.onEditHeaderFooter("footer")} disabled={off} />
               <RibbonButton
                 label="Page number"
-                wide
+                icon={Hash}
+                text="Page number"
+                large
                 onClick={() => {
                   props.onEditHeaderFooter("footer");
                   window.setTimeout(() => props.onInsertField("page"), 250);
                 }}
                 disabled={off}
-              >
-                #
-              </RibbonButton>
+              />
             </RibbonGroup>
           </>
         )}
@@ -364,7 +466,7 @@ export function EditorRibbon(props: Props) {
         {tab === "references" && (
           <>
             <RibbonGroup label="Table of contents">
-              <Dropdown label="Table of contents" trigger={<span>☰ Table of contents</span>} wide disabled={off}>
+              <Dropdown label="Table of contents" icon={TableOfContents} text="Table of contents" large disabled={off}>
                 {(close) => (
                   <>
                     {[1, 2, 3, 4].map((n) => (
@@ -377,7 +479,7 @@ export function EditorRibbon(props: Props) {
               </Dropdown>
             </RibbonGroup>
             <RibbonGroup label="Footnotes">
-              <RibbonButton label="Insert footnote" wide onClick={props.onInsertFootnote} disabled={off}>¹</RibbonButton>
+              <RibbonButton label="Insert footnote" icon={Superscript} text="Insert footnote" large onClick={props.onInsertFootnote} disabled={off} />
             </RibbonGroup>
           </>
         )}
@@ -385,103 +487,116 @@ export function EditorRibbon(props: Props) {
         {tab === "headerFooter" && (
           <>
             <RibbonGroup label="Options">
-              <label className="tp-check rb-check">
-                <input
-                  type="checkbox"
-                  checked={props.pageSetup.differentFirstPage}
-                  onChange={(e) => props.onPageSetupChange({ differentFirstPage: e.target.checked })}
-                />
-                Different first page
-              </label>
-              <label className="tp-check rb-check">
-                <input
-                  type="checkbox"
-                  checked={props.pageSetup.differentOddEven}
-                  onChange={(e) => props.onPageSetupChange({ differentOddEven: e.target.checked })}
-                />
-                Different odd & even pages
-              </label>
+              <RibbonStack>
+                <label className="tp-check rb-check">
+                  <input
+                    type="checkbox"
+                    checked={props.pageSetup.differentFirstPage}
+                    onChange={(e) => props.onPageSetupChange({ differentFirstPage: e.target.checked })}
+                  />
+                  Different first page
+                </label>
+                <label className="tp-check rb-check">
+                  <input
+                    type="checkbox"
+                    checked={props.pageSetup.differentOddEven}
+                    onChange={(e) => props.onPageSetupChange({ differentOddEven: e.target.checked })}
+                  />
+                  Different odd & even pages
+                </label>
+              </RibbonStack>
             </RibbonGroup>
             <RibbonGroup label="Insert">
-              <RibbonButton label="Page number" wide onClick={() => props.onInsertField("page")}>#</RibbonButton>
-              <RibbonButton label="Page count" wide onClick={() => props.onInsertField("pages")}>##</RibbonButton>
-              <RibbonButton label="Date" wide onClick={() => props.onInsertField("date")}>📅</RibbonButton>
-              <RibbonButton label="Document title" wide onClick={() => props.onInsertField("title")}>T</RibbonButton>
+              <RibbonButton label="Page number" icon={Hash} text="Page number" large onClick={() => props.onInsertField("page")} />
+              <RibbonButton label="Page count" icon={Files} text="Page count" large onClick={() => props.onInsertField("pages")} />
+              <RibbonButton label="Date" icon={CalendarDays} text="Date" large onClick={() => props.onInsertField("date")} />
+              <RibbonButton label="Document title" icon={Heading} text="Document title" large onClick={() => props.onInsertField("title")} />
             </RibbonGroup>
             <RibbonGroup label="Position">
-              <label className="rb-field">
-                <span>Header from top (in)</span>
-                <input
-                  className="rb-select rb-select-narrow"
-                  type="number"
-                  step={0.1}
-                  min={0}
-                  max={2}
-                  value={+(props.pageSetup.headerDistance / 96).toFixed(2)}
-                  onChange={(e) => props.onPageSetupChange({ headerDistance: Math.round(Number(e.target.value) * 96) })}
-                />
-              </label>
-              <label className="rb-field">
-                <span>Footer from bottom (in)</span>
-                <input
-                  className="rb-select rb-select-narrow"
-                  type="number"
-                  step={0.1}
-                  min={0}
-                  max={2}
-                  value={+(props.pageSetup.footerDistance / 96).toFixed(2)}
-                  onChange={(e) => props.onPageSetupChange({ footerDistance: Math.round(Number(e.target.value) * 96) })}
-                />
-              </label>
+              <RibbonStack>
+                <label className="rb-field">
+                  <ArrowUpToLine size={ICON_SM} strokeWidth={1.75} aria-hidden className="rb-icon" />
+                  <span className="rb-field-label">Header from top (in)</span>
+                  <input
+                    className="rb-select rb-select-narrow"
+                    type="number"
+                    step={0.1}
+                    min={0}
+                    max={2}
+                    value={+(props.pageSetup.headerDistance / 96).toFixed(2)}
+                    onChange={(e) => props.onPageSetupChange({ headerDistance: Math.round(Number(e.target.value) * 96) })}
+                  />
+                </label>
+                <label className="rb-field">
+                  <ArrowDownToLine size={ICON_SM} strokeWidth={1.75} aria-hidden className="rb-icon" />
+                  <span className="rb-field-label">Footer from bottom (in)</span>
+                  <input
+                    className="rb-select rb-select-narrow"
+                    type="number"
+                    step={0.1}
+                    min={0}
+                    max={2}
+                    value={+(props.pageSetup.footerDistance / 96).toFixed(2)}
+                    onChange={(e) => props.onPageSetupChange({ footerDistance: Math.round(Number(e.target.value) * 96) })}
+                  />
+                </label>
+              </RibbonStack>
             </RibbonGroup>
             <RibbonGroup label="Close">
-              <RibbonButton label="Close header and footer (Esc)" wide onClick={props.onCloseHeaderFooter}>✕</RibbonButton>
+              <RibbonButton label="Close header and footer (Esc)" icon={X} text="Close" large onClick={props.onCloseHeaderFooter} />
             </RibbonGroup>
           </>
         )}
 
         {tab === "layout" && (
           <>
-            <RibbonGroup label="Page setup">
-              <label className="rb-field">
-                <span>Size</span>
-                <select className="rb-select" value={layout.paperSize} onChange={(e) => props.onLayoutChange({ paperSize: e.target.value as PaperSize })}>
-                  {PAPER.map((p) => (
-                    <option key={p.value} value={p.value}>{p.label}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="rb-field">
-                <span>Orientation</span>
-                <select
-                  className="rb-select"
-                  value={layout.orientation}
-                  onChange={(e) => props.onLayoutChange({ orientation: e.target.value as PageLayout["orientation"] })}
-                >
-                  <option value="portrait">Portrait</option>
-                  <option value="landscape">Landscape</option>
-                </select>
-              </label>
-              <label className="rb-field">
-                <span>Margins</span>
-                <select
-                  className="rb-select"
-                  value={MARGINS.find((m) => [layout.marginTop, layout.marginRight, layout.marginBottom, layout.marginLeft].every((v) => v === m.px))?.label ?? "Custom"}
-                  onChange={(e) => {
-                    const m = MARGINS.find((x) => x.label === e.target.value);
-                    if (m) props.onLayoutChange({ marginTop: m.px, marginRight: m.px, marginBottom: m.px, marginLeft: m.px });
-                  }}
-                >
-                  {MARGINS.map((m) => (
-                    <option key={m.label} value={m.label}>{m.label} ({m.px / 96} in)</option>
-                  ))}
-                  <option value="Custom" disabled>Custom</option>
-                </select>
-              </label>
-              <RibbonButton label="More page setup…" wide onClick={props.onOpenPageSetup}>⚙</RibbonButton>
+            <RibbonGroup label={props.sectionLayout ? "Page setup · this section" : "Page setup"}>
+              <RibbonStack>
+                <label className="rb-field" title="Paper size">
+                  <FileText size={ICON_SM} strokeWidth={1.75} aria-hidden className="rb-icon" />
+                  <span className="rb-field-label">Size</span>
+                  <select className="rb-select rb-select-layout" value={layout.paperSize} onChange={(e) => props.onLayoutChange({ paperSize: e.target.value as PaperSize })}>
+                    {PAPER.map((p) => (
+                      <option key={p.value} value={p.value}>{p.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="rb-field" title="Orientation">
+                  <RectangleVertical size={ICON_SM} strokeWidth={1.75} aria-hidden className="rb-icon" style={layout.orientation === "landscape" ? { transform: "rotate(90deg)" } : undefined} />
+                  <span className="rb-field-label">Orientation</span>
+                  <select
+                    className="rb-select rb-select-layout"
+                    value={layout.orientation}
+                    onChange={(e) => props.onLayoutChange({ orientation: e.target.value as PageLayout["orientation"] })}
+                  >
+                    <option value="portrait">Portrait</option>
+                    <option value="landscape">Landscape</option>
+                  </select>
+                </label>
+              </RibbonStack>
+              <RibbonStack>
+                <label className="rb-field" title="Margins">
+                  <Frame size={ICON_SM} strokeWidth={1.75} aria-hidden className="rb-icon" />
+                  <span className="rb-field-label">Margins</span>
+                  <select
+                    className="rb-select rb-select-margins"
+                    value={MARGINS.find((m) => [layout.marginTop, layout.marginRight, layout.marginBottom, layout.marginLeft].every((v) => v === m.px))?.label ?? "Custom"}
+                    onChange={(e) => {
+                      const m = MARGINS.find((x) => x.label === e.target.value);
+                      if (m) props.onLayoutChange({ marginTop: m.px, marginRight: m.px, marginBottom: m.px, marginLeft: m.px });
+                    }}
+                  >
+                    {MARGINS.map((m) => (
+                      <option key={m.label} value={m.label}>{m.label} ({m.px / 96} in)</option>
+                    ))}
+                    <option value="Custom" disabled>Custom</option>
+                  </select>
+                </label>
+                <RibbonButton label="More page setup…" icon={Settings2} text="More page setup…" onClick={props.onOpenPageSetup} />
+              </RibbonStack>
             </RibbonGroup>
             <RibbonGroup label={props.sectionLayout ? "Breaks · this section" : "Breaks"}>
-              <Dropdown label="Breaks" trigger={<span>⤓ Breaks</span>} wide disabled={off}>
+              <Dropdown label="Breaks" icon={SquareSplitVertical} text="Breaks" large disabled={off}>
                 {(close) => (
                   <>
                     <MenuItem onSelect={() => { close(); void run((c) => c.insertPageBreak())(); }}>Page break</MenuItem>
@@ -500,7 +615,7 @@ export function EditorRibbon(props: Props) {
               </Dropdown>
             </RibbonGroup>
             <RibbonGroup label="Page background">
-              <Dropdown label="Watermark" trigger={<span>Watermark</span>} wide disabled={off}>
+              <Dropdown label="Watermark" icon={Stamp} text="Watermark" large disabled={off}>
                 {(close) => (
                   <>
                     <MenuItem checked={!props.pageSetup.watermark} onSelect={() => { close(); props.onPageSetupChange({ watermark: null }); }}>None</MenuItem>
@@ -516,8 +631,17 @@ export function EditorRibbon(props: Props) {
                     <MenuItem
                       onSelect={() => {
                         close();
-                        const text = prompt("Watermark text:", props.pageSetup.watermark?.text ?? "");
-                        if (text?.trim()) props.onPageSetupChange({ watermark: { text: text.trim().slice(0, 60), color: "#94a3b8", opacity: 0.3 } });
+                        void promptDialog({
+                          title: "Custom watermark",
+                          message: "Shown faintly behind the text on every page.",
+                          label: "Watermark text",
+                          defaultValue: props.pageSetup.watermark?.text ?? "",
+                          placeholder: "e.g. INTERNAL",
+                          confirmLabel: "Add watermark",
+                          validate: (v) => (!v.trim() ? "Enter some text." : v.trim().length > 60 ? "Keep it under 60 characters." : null),
+                        }).then((text) => {
+                          if (text?.trim()) props.onPageSetupChange({ watermark: { text: text.trim(), color: "#94a3b8", opacity: 0.3 } });
+                        });
                       }}
                     >
                       Custom…
@@ -527,13 +651,15 @@ export function EditorRibbon(props: Props) {
               </Dropdown>
               <ColorMenu
                 label="Page colour"
+                text="Page colour"
+                large
                 noneLabel="No colour"
-                glyph="▣"
-                initial="#fdf6e3"
+                icon={PaintBucket}
+                initial={props.pageSetup.pageColor ?? "#fdf6e3"}
                 disabled={off}
                 onPick={(color) => props.onPageSetupChange({ pageColor: color })}
               />
-              <Dropdown label="Page borders" trigger={<span>Borders</span>} wide disabled={off}>
+              <Dropdown label="Page borders" icon={SquareDashed} text="Page borders" large disabled={off}>
                 {(close) => (
                   <>
                     {BORDERS.map((b) => (
@@ -555,21 +681,25 @@ export function EditorRibbon(props: Props) {
         {tab === "view" && (
           <>
             <RibbonGroup label="Zoom">
-              <RibbonButton label="Zoom out" onClick={() => props.onZoomChange(prevStop(props.zoom, -1))}>−</RibbonButton>
-              <select className="rb-select rb-select-narrow" aria-label="Zoom" value={props.zoom} onChange={(e) => props.onZoomChange(Number(e.target.value))}>
-                {ZOOM_STOPS.map((z) => (
-                  <option key={z} value={z}>{Math.round(z * 100)}%</option>
-                ))}
-              </select>
-              <RibbonButton label="Zoom in" onClick={() => props.onZoomChange(prevStop(props.zoom, 1))}>+</RibbonButton>
-              <RibbonButton label="100%" wide onClick={() => props.onZoomChange(1)}>⊙</RibbonButton>
+              <RibbonStack>
+                <div className="rb-row">
+                  <RibbonButton label="Zoom out" icon={ZoomOut} onClick={() => props.onZoomChange(prevStop(props.zoom, -1))} />
+                  <select className="rb-select rb-select-narrow" aria-label="Zoom" title="Zoom" value={props.zoom} onChange={(e) => props.onZoomChange(Number(e.target.value))}>
+                    {ZOOM_STOPS.map((z) => (
+                      <option key={z} value={z}>{Math.round(z * 100)}%</option>
+                    ))}
+                  </select>
+                  <RibbonButton label="Zoom in" icon={ZoomIn} onClick={() => props.onZoomChange(prevStop(props.zoom, 1))} />
+                </div>
+              </RibbonStack>
+              <RibbonButton label="100%" icon={Scan} text="100%" large onClick={() => props.onZoomChange(1)} />
             </RibbonGroup>
             <RibbonGroup label="Show">
-              <RibbonButton label="Status bar (word count)" wide active={props.showStatusBar} onClick={props.onToggleStatusBar}>▭</RibbonButton>
+              <RibbonButton label="Status bar (word count)" icon={PanelBottom} text="Status bar" large active={props.showStatusBar} onClick={props.onToggleStatusBar} />
             </RibbonGroup>
           </>
         )}
-      </div>
+      </RibbonPanel>
     </div>
   );
 }
@@ -596,6 +726,7 @@ function FontSizeBox({ value, disabled, onCommit }: { value: number; disabled: b
       <input
         className="rb-select rb-size"
         aria-label="Font size"
+        title="Font size"
         list="tp-font-sizes"
         inputMode="decimal"
         disabled={disabled}

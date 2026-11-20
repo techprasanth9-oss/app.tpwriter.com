@@ -98,7 +98,8 @@ test("DOCX export carries equation, text box and chart image", async ({ page, re
   ]);
   await openDocument(page, id);
   const download = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Export DOCX" }).click();
+  await page.getByRole("button", { name: "File" }).click();
+  await page.getByRole("menuitem", { name: /Download as Word/ }).click();
   const file = await (await download).path();
   const zip = await JSZip.loadAsync(fs.readFileSync(file!));
   const xml = await zip.file("word/document.xml")!.async("string");

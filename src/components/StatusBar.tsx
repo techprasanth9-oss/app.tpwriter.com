@@ -1,4 +1,9 @@
 import { useEffect, useState } from "react";
+import { Minus, Plus } from "lucide-react";
+
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 2;
+const ZOOM_STOPS = [0.5, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
 
 export interface DocumentStats {
   words: number;
@@ -35,10 +40,12 @@ interface Props {
   version: number;
   page: number;
   pageCount: number;
+  zoom: number;
+  onZoomChange: (next: number) => void;
 }
 
 /** Bottom bar: page position and live word count (click for details). */
-export function StatusBar({ root, version, page, pageCount }: Props) {
+export function StatusBar({ root, version, page, pageCount, zoom, onZoomChange }: Props) {
   const [stats, setStats] = useState<DocumentStats>(() => documentStats(root));
   const [details, setDetails] = useState(false);
 
@@ -55,6 +62,7 @@ export function StatusBar({ root, version, page, pageCount }: Props) {
       <button type="button" className="tp-statusbar-btn" onClick={() => setDetails((d) => !d)} aria-expanded={details}>
         {stats.words.toLocaleString()} {stats.words === 1 ? "word" : "words"}
       </button>
+      <ZoomControl zoom={zoom} onChange={onZoomChange} />
       {details && (
         <div className="tp-wordcount" role="dialog" aria-label="Word count">
           <dl>
@@ -67,5 +75,37 @@ export function StatusBar({ root, version, page, pageCount }: Props) {
         </div>
       )}
     </footer>
+  );
+}
+
+/** Word-style zoom: step buttons around a slider, percentage resets. */
+function ZoomControl({ zoom, onChange }: { zoom: number; onChange: (z: number) => void }) {
+  const step = (dir: 1 | -1) => {
+    const next = dir > 0 ? ZOOM_STOPS.find((z) => z > zoom + 0.001) : [...ZOOM_STOPS].reverse().find((z) => z < zoom - 0.001);
+    if (next) onChange(next);
+  };
+  return (
+    <div className="tp-zoom" role="group" aria-label="Zoom">
+      <button type="button" className="tp-statusbar-icon" onClick={() => step(-1)} disabled={zoom <= ZOOM_MIN} aria-label="Zoom out" title="Zoom out">
+        <Minus size={14} strokeWidth={2} aria-hidden />
+      </button>
+      <input
+        type="range"
+        className="tp-zoom-slider"
+        min={ZOOM_MIN * 100}
+        max={ZOOM_MAX * 100}
+        step={5}
+        value={Math.round(zoom * 100)}
+        onChange={(e) => onChange(Number(e.target.value) / 100)}
+        aria-label="Zoom level"
+        aria-valuetext={`${Math.round(zoom * 100)}%`}
+      />
+      <button type="button" className="tp-statusbar-icon" onClick={() => step(1)} disabled={zoom >= ZOOM_MAX} aria-label="Zoom in" title="Zoom in">
+        <Plus size={14} strokeWidth={2} aria-hidden />
+      </button>
+      <button type="button" className="tp-statusbar-btn tp-zoom-value" onClick={() => onChange(1)} title="Reset to 100%">
+        {Math.round(zoom * 100)}%
+      </button>
+    </div>
   );
 }

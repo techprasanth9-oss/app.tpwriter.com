@@ -1,3 +1,4 @@
+import { confirmDialog } from "~/components/ui/dialogs";
 import { NotificationsBell } from "~/components/comments";
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
@@ -27,7 +28,13 @@ export function DocumentListPage() {
   };
 
   const handleDelete = async (id: string, title: string) => {
-    if (!confirm(`Delete "${title}"? This can't be undone.`)) return;
+    const ok = await confirmDialog({
+      title: `Delete “${title}”?`,
+      message: "The document, its comments and its version history will be permanently deleted. This can't be undone.",
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
     await deleteMut.mutateAsync(id);
   };
 

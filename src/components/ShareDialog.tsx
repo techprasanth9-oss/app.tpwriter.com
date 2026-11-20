@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "~/lib/api/client";
+import { Dialog, DialogButton } from "./ui/Dialog";
 import {
   canAtLeast,
   getShares,
@@ -49,13 +50,7 @@ export function ShareDialog({ open, documentId, title, role, onClose }: Props) {
     if (!open) return;
     setError(null);
     setCopied(false);
-    requestAnimationFrame(() => emailRef.current?.focus());
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open]);
 
   const onDone = {
     onSuccess: (next: Shares) => {
@@ -84,19 +79,16 @@ export function ShareDialog({ open, documentId, title, role, onClose }: Props) {
   };
 
   return (
-    <div className="layout-backdrop" onMouseDown={onClose}>
-      <div
-        className="layout-dialog tp-share-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Share “${title}”`}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <header className="layout-header">
-          <h2 className="layout-title">Share “{title}”</h2>
-          <button type="button" className="layout-close" onClick={onClose} aria-label="Close">×</button>
-        </header>
-        <div className="layout-body">
+    <Dialog
+      open
+      size="md"
+      title={`Share “${title}”`}
+      description="Invite people by email or turn on a link. Everyone needs to sign in."
+      onClose={onClose}
+      className="tp-share-dialog"
+      initialFocus={() => emailRef.current}
+      footer={<DialogButton variant="primary" onClick={onClose}>Done</DialogButton>}
+    >
           {isOwner && (
             <form
               className="tp-share-add"
@@ -107,7 +99,7 @@ export function ShareDialog({ open, documentId, title, role, onClose }: Props) {
             >
               <input
                 ref={emailRef}
-                className="layout-select"
+                className="tp-input"
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -116,16 +108,16 @@ export function ShareDialog({ open, documentId, title, role, onClose }: Props) {
                 required
               />
               <RoleSelect value={newRole} onChange={setNewRole} label="Role for the new person" />
-              <button type="submit" className="doc-btn doc-btn-primary" disabled={busy || !email.trim()}>
+              <button type="submit" className="tp-btn tp-btn--primary" disabled={busy || !email.trim()}>
                 Share
               </button>
             </form>
           )}
-          {error && <p className="layout-error" role="alert">{error}</p>}
+          {error && <p className="tp-alert" role="alert">{error}</p>}
 
           <h3 className="tp-share-heading">People with access</h3>
           {shares.isLoading && <p className="tp-share-muted">Loading…</p>}
-          {shares.error && <p className="layout-error">{describeError(shares.error)}</p>}
+          {shares.error && <p className="tp-alert">{describeError(shares.error)}</p>}
           {data && (
             <ul className="tp-share-list">
               <li>
@@ -196,13 +188,13 @@ export function ShareDialog({ open, documentId, title, role, onClose }: Props) {
               {data.link.enabled && data.link.token && (
                 <div className="tp-share-link-row">
                   <input
-                    className="layout-select tp-share-url"
+                    className="tp-input tp-share-url"
                     readOnly
                     value={shareLinkUrl(documentId, data.link.token)}
                     aria-label="Share link"
                     onFocus={(e) => e.target.select()}
                   />
-                  <button type="button" className="doc-btn" onClick={() => void copyLink()}>
+                  <button type="button" className="tp-btn tp-btn--secondary" onClick={() => void copyLink()}>
                     {copied ? "Copied" : "Copy link"}
                   </button>
                 </div>
@@ -213,9 +205,7 @@ export function ShareDialog({ open, documentId, title, role, onClose }: Props) {
             </section>
           )}
           {!canAtLeast(role, "owner") && <p className="tp-share-muted">Only the owner can change who has access.</p>}
-        </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }
 
@@ -241,7 +231,7 @@ function MemberControls(props: {
   return (
     <span className="tp-share-controls">
       <RoleSelect value={props.role} onChange={props.onRole} disabled={props.disabled} label={`Role for ${props.label}`} />
-      <button type="button" className="doc-btn" onClick={props.onRemove} disabled={props.disabled} aria-label={`Remove ${props.label}`}>
+      <button type="button" className="tp-btn tp-btn--secondary" onClick={props.onRemove} disabled={props.disabled} aria-label={`Remove ${props.label}`}>
         Remove
       </button>
     </span>
@@ -251,7 +241,7 @@ function MemberControls(props: {
 function RoleSelect(props: { value: ShareRole; onChange: (r: ShareRole) => void; disabled?: boolean; label: string }) {
   return (
     <select
-      className="layout-select tp-share-role"
+      className="tp-input tp-share-role"
       value={props.value}
       disabled={props.disabled}
       aria-label={props.label}

@@ -180,7 +180,8 @@ test("DOCX export carries headers, footnotes and sections", async ({ page, reque
   });
   await openDocument(page, id);
   const download = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Export DOCX" }).click();
+  await page.getByRole("button", { name: "File" }).click();
+  await page.getByRole("menuitem", { name: /Download as Word/ }).click();
   const file = await (await download).path();
   const zip = await JSZip.loadAsync(fs.readFileSync(file!));
   const names = Object.keys(zip.files);

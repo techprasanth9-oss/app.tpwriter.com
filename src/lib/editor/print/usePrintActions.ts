@@ -1,3 +1,4 @@
+import { alertDialog } from "~/components/ui/dialogs";
 import "./print.css";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PrintPageGeometry } from "./printLayout";
@@ -46,7 +47,7 @@ export function usePrintActions({ documentId, title, getDocumentEl, pages, befor
       await printDocument(el, pagesRef.current);
     } catch (err) {
       console.error("[print] failed:", err);
-      alert(`Couldn't print.\n\n${err instanceof Error ? err.message : String(err)}`);
+      void alertDialog({ title: "Couldn't print", message: err instanceof Error ? err.message : String(err) });
     }
   }, [getDocumentEl]);
 
@@ -66,11 +67,15 @@ export function usePrintActions({ documentId, title, getDocumentEl, pages, befor
     } catch (err) {
       if (err instanceof PdfNotConfiguredError) {
         setPdfAvailable(false);
-        alert("PDF download isn't available on this server. Use Print… and choose “Save as PDF”.");
+        void alertDialog({
+          tone: "info",
+          title: "PDF download isn't available",
+          message: "This server can't create PDFs. Use File → Print… and choose “Save as PDF” instead.",
+        });
         return;
       }
       console.error("[pdf] failed:", err);
-      alert(`Couldn't create the PDF.\n\n${err instanceof Error ? err.message : String(err)}`);
+      void alertDialog({ title: "Couldn't create the PDF", message: err instanceof Error ? err.message : String(err) });
     } finally {
       setBusy(false);
     }
